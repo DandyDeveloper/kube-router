@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/osrg/gobgp/pkg/packet/bgp"
 
 	"github.com/vishvananda/netlink"
 )
@@ -28,23 +31,11 @@ func stringSliceToIPs(s []string) ([]net.IP, error) {
 	for _, ipString := range s {
 		ip := net.ParseIP(ipString)
 		if ip == nil {
-			return nil, fmt.Errorf("Could not parse \"%s\" as an IP", ipString)
+			return nil, fmt.Errorf("could not parse \"%s\" as an IP", ipString)
 		}
 		ips = append(ips, ip)
 	}
 	return ips, nil
-}
-
-func stringSliceToUInt16(s []string) ([]uint16, error) {
-	ints := make([]uint16, 0)
-	for _, intString := range s {
-		newInt, err := strconv.ParseUint(intString, 0, 16)
-		if err != nil {
-			return nil, fmt.Errorf("Could not parse \"%s\" as an integer", intString)
-		}
-		ints = append(ints, uint16(newInt))
-	}
-	return ints, nil
 }
 
 func stringSliceToUInt32(s []string) ([]uint32, error) {
@@ -52,7 +43,7 @@ func stringSliceToUInt32(s []string) ([]uint32, error) {
 	for _, intString := range s {
 		newInt, err := strconv.ParseUint(intString, 0, 32)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse \"%s\" as an integer", intString)
+			return nil, fmt.Errorf("could not parse \"%s\" as an integer", intString)
 		}
 		ints = append(ints, uint32(newInt))
 	}
@@ -64,7 +55,7 @@ func stringSliceB64Decode(s []string) ([]string, error) {
 	for _, b64String := range s {
 		decoded, err := base64.StdEncoding.DecodeString(b64String)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse \"%s\" as a base64 encoded string",
+			return nil, fmt.Errorf("could not parse \"%s\" as a base64 encoded string",
 				b64String)
 		}
 		ss = append(ss, string(decoded))
@@ -77,7 +68,7 @@ func ipv4IsEnabled() bool {
 	if err != nil {
 		return false
 	}
-	l.Close()
+	_ = l.Close()
 
 	return true
 }
@@ -94,28 +85,28 @@ func ipv6IsEnabled() bool {
 	if err != nil {
 		return false
 	}
-	l.Close()
+	_ = l.Close()
 
 	return true
 }
 
-func getNodeSubnet(nodeIp net.IP) (net.IPNet, string, error) {
+func getNodeSubnet(nodeIP net.IP) (net.IPNet, string, error) {
 	links, err := netlink.LinkList()
 	if err != nil {
-		return net.IPNet{}, "", errors.New("Failed to get list of links")
+		return net.IPNet{}, "", errors.New("failed to get list of links")
 	}
 	for _, link := range links {
 		addresses, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 		if err != nil {
-			return net.IPNet{}, "", errors.New("Failed to get list of addr")
+			return net.IPNet{}, "", errors.New("failed to get list of addr")
 		}
 		for _, addr := range addresses {
-			if addr.IPNet.IP.Equal(nodeIp) {
+			if addr.IPNet.IP.Equal(nodeIP) {
 				return *addr.IPNet, link.Attrs().Name, nil
 			}
 		}
 	}
-	return net.IPNet{}, "", errors.New("Failed to find interface with specified node ip")
+	return net.IPNet{}, "", errors.New("failed to find interface with specified node ip")
 }
 
 // generateTunnelName will generate a name for a tunnel interface given a node IP
@@ -131,4 +122,30 @@ func generateTunnelName(nodeIP string) string {
 	}
 
 	return "tun" + hash
+}
+
+// validateCommunity takes in a string and attempts to parse a BGP community out of it in a way that is similar to
+// gobgp (internal/pkg/table/policy.go:ParseCommunity()). If it is not able to parse the community information it
+// returns an error.
+func validateCommunity(arg string) error {
+	_, err := strconv.ParseUint(arg, 10, 32)
+	if err == nil {
+		return nil
+	}
+
+	_regexpCommunity := regexp.MustCompile(`(\d+):(\d+)`)
+	elems := _regexpCommunity.FindStringSubmatch(arg)
+	if len(elems) == 3 {
+		if _, err := strconv.ParseUint(elems[1], 10, 16); err == nil {
+			if _, err = strconv.ParseUint(elems[2], 10, 16); err == nil {
+				return nil
+			}
+		}
+	}
+	for _, v := range bgp.WellKnownCommunityNameMap {
+		if arg == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to parse %s as community", arg)
 }

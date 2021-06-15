@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -18,23 +20,23 @@ import (
 	"github.com/cloudnativelabs/kube-router/pkg/options"
 	"github.com/cloudnativelabs/kube-router/pkg/utils"
 	"github.com/coreos/go-iptables/iptables"
-	"github.com/golang/glog"
-	bgpapi "github.com/osrg/gobgp/api"
-	"github.com/osrg/gobgp/config"
-	"github.com/osrg/gobgp/packet/bgp"
-	gobgp "github.com/osrg/gobgp/server"
-	"github.com/osrg/gobgp/table"
+	"github.com/golang/protobuf/ptypes"
+	"github.com/golang/protobuf/ptypes/any"
+	gobgpapi "github.com/osrg/gobgp/api"
+	gobgp "github.com/osrg/gobgp/pkg/server"
+	"k8s.io/klog/v2"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1core "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
 const (
-	IFACE_NOT_FOUND = "Link not found"
+	IfaceNotFound = "Link not found"
 
 	customRouteTableID   = "77"
 	customRouteTableName = "kube-router"
@@ -42,6 +44,7 @@ const (
 	nodeAddrsIPSetName   = "kube-router-node-ips"
 
 	nodeASNAnnotation                  = "kube-router.io/node.asn"
+	nodeCommunitiesAnnotation          = "kube-router.io/node.bgp.communities"
 	pathPrependASNAnnotation           = "kube-router.io/path-prepend.as"
 	pathPrependRepeatNAnnotation       = "kube-router.io/path-prepend.repeat-n"
 	peerASNAnnotation                  = "kube-router.io/peer.asns"
@@ -67,7 +70,7 @@ type NetworkRoutingController struct {
 	nodeName                       string
 	nodeSubnet                     net.IPNet
 	nodeInterface                  string
-	routerId                       string
+	routerID                       string
 	isIpv6                         bool
 	activeNodes                    map[string]bool
 	mu                             sync.Mutex
@@ -81,14 +84,17 @@ type NetworkRoutingController struct {
 	advertiseExternalIP            bool
 	advertiseLoadBalancerIP        bool
 	advertisePodCidr               bool
+	autoMTU                        bool
 	defaultNodeAsnNumber           uint32
 	nodeAsnNumber                  uint32
-	globalPeerRouters              []*config.Neighbor
+	nodeCommunities                []string
+	globalPeerRouters              []*gobgpapi.Peer
 	nodePeerRouters                []string
 	enableCNI                      bool
 	bgpFullMeshMode                bool
 	bgpEnableInternal              bool
 	bgpGracefulRestart             bool
+	bgpGracefulRestartTime         time.Duration
 	bgpGracefulRestartDeferralTime time.Duration
 	ipSetHandler                   *utils.IPSet
 	enableOverlays                 bool
@@ -96,10 +102,11 @@ type NetworkRoutingController struct {
 	peerMultihopTTL                uint8
 	MetricsEnabled                 bool
 	bgpServerStarted               bool
-	bgpPort                        uint16
+	bgpHoldtime                    float64
+	bgpPort                        uint32
 	bgpRRClient                    bool
 	bgpRRServer                    bool
-	bgpClusterID                   uint32
+	bgpClusterID                   string
 	cniConfFile                    string
 	disableSrcDstCheck             bool
 	initSrcDstCheckDone            bool
@@ -109,6 +116,9 @@ type NetworkRoutingController struct {
 	pathPrepend                    bool
 	localAddressList               []string
 	overrideNextHop                bool
+	podCidr                        string
+	CNIFirewallSetup               *sync.Cond
+	ipsetMutex                     *sync.Mutex
 
 	nodeLister cache.Indexer
 	svcLister  cache.Indexer
@@ -126,10 +136,10 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 		nrc.updateCNIConfig()
 	}
 
-	glog.V(1).Info("Populating ipsets.")
+	klog.V(1).Info("Populating ipsets.")
 	err = nrc.syncNodeIPSets()
 	if err != nil {
-		glog.Errorf("Failed initial ipset setup: %s", err)
+		klog.Errorf("Failed initial ipset setup: %s", err)
 	}
 
 	// In case of cluster provisioned on AWS disable source-destination check
@@ -141,78 +151,95 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 	// enable IP forwarding for the packets coming in/out from the pods
 	err = nrc.enableForwarding()
 	if err != nil {
-		glog.Errorf("Failed to enable IP forwarding of traffic from pods: %s", err.Error())
+		klog.Errorf("Failed to enable IP forwarding of traffic from pods: %s", err.Error())
 	}
+
+	nrc.CNIFirewallSetup.Broadcast()
 
 	// Handle ipip tunnel overlay
 	if nrc.enableOverlays {
-		glog.V(1).Info("IPIP Tunnel Overlay enabled in configuration.")
-		glog.V(1).Info("Setting up overlay networking.")
+		klog.V(1).Info("IPIP Tunnel Overlay enabled in configuration.")
+		klog.V(1).Info("Setting up overlay networking.")
 		err = nrc.enablePolicyBasedRouting()
 		if err != nil {
-			glog.Errorf("Failed to enable required policy based routing: %s", err.Error())
+			klog.Errorf("Failed to enable required policy based routing: %s", err.Error())
 		}
 	} else {
-		glog.V(1).Info("IPIP Tunnel Overlay disabled in configuration.")
-		glog.V(1).Info("Cleaning up old overlay networking if needed.")
+		klog.V(1).Info("IPIP Tunnel Overlay disabled in configuration.")
+		klog.V(1).Info("Cleaning up old overlay networking if needed.")
 		err = nrc.disablePolicyBasedRouting()
 		if err != nil {
-			glog.Errorf("Failed to disable policy based routing: %s", err.Error())
+			klog.Errorf("Failed to disable policy based routing: %s", err.Error())
 		}
 	}
 
-	glog.V(1).Info("Performing cleanup of depreciated rules/ipsets (if needed).")
+	klog.V(1).Info("Performing cleanup of depreciated rules/ipsets (if needed).")
 	err = nrc.deleteBadPodEgressRules()
 	if err != nil {
-		glog.Errorf("Error cleaning up old/bad Pod egress rules: %s", err.Error())
+		klog.Errorf("Error cleaning up old/bad Pod egress rules: %s", err.Error())
 	}
 
 	// Handle Pod egress masquerading configuration
 	if nrc.enablePodEgress {
-		glog.V(1).Infoln("Enabling Pod egress.")
+		klog.V(1).Infoln("Enabling Pod egress.")
 
 		err = nrc.createPodEgressRule()
 		if err != nil {
-			glog.Errorf("Error enabling Pod egress: %s", err.Error())
+			klog.Errorf("Error enabling Pod egress: %s", err.Error())
 		}
 	} else {
-		glog.V(1).Infoln("Disabling Pod egress.")
+		klog.V(1).Infoln("Disabling Pod egress.")
 
 		err = nrc.deletePodEgressRule()
 		if err != nil {
-			glog.Warningf("Error cleaning up Pod Egress related networking: %s", err)
+			klog.Warningf("Error cleaning up Pod Egress related networking: %s", err)
 		}
 	}
 
 	// create 'kube-bridge' interface to which pods will be connected
-	_, err = netlink.LinkByName("kube-bridge")
-	if err != nil && err.Error() == IFACE_NOT_FOUND {
+	kubeBridgeIf, err := netlink.LinkByName("kube-bridge")
+	if err != nil && err.Error() == IfaceNotFound {
 		linkAttrs := netlink.NewLinkAttrs()
 		linkAttrs.Name = "kube-bridge"
 		bridge := &netlink.Bridge{LinkAttrs: linkAttrs}
 		if err = netlink.LinkAdd(bridge); err != nil {
-			glog.Errorf("Failed to create `kube-router` bridge due to %s. Will be created by CNI bridge plugin when pod is launched.", err.Error())
+			klog.Errorf("Failed to create `kube-router` bridge due to %s. Will be created by CNI bridge plugin when pod is launched.", err.Error())
 		}
-		kubeBridgeIf, err := netlink.LinkByName("kube-bridge")
+		kubeBridgeIf, err = netlink.LinkByName("kube-bridge")
 		if err != nil {
-			glog.Errorf("Failed to find created `kube-router` bridge due to %s. Will be created by CNI bridge plugin when pod is launched.", err.Error())
+			klog.Errorf("Failed to find created `kube-router` bridge due to %s. Will be created by CNI bridge plugin when pod is launched.", err.Error())
 		}
 		err = netlink.LinkSetUp(kubeBridgeIf)
 		if err != nil {
-			glog.Errorf("Failed to bring `kube-router` bridge up due to %s. Will be created by CNI bridge plugin at later point when pod is launched.", err.Error())
+			klog.Errorf("Failed to bring `kube-router` bridge up due to %s. Will be created by CNI bridge plugin at later point when pod is launched.", err.Error())
 		}
 	}
 
+	if nrc.autoMTU {
+		mtu, err := utils.GetMTUFromNodeIP(nrc.nodeIP, nrc.enableOverlays)
+		if err != nil {
+			klog.Errorf("Failed to find MTU for node IP: %s for intelligently setting the kube-bridge MTU due to %s.", nrc.nodeIP, err.Error())
+		}
+		if mtu > 0 {
+			klog.Infof("Setting MTU of kube-bridge interface to: %d", mtu)
+			err = netlink.LinkSetMTU(kubeBridgeIf, mtu)
+			if err != nil {
+				klog.Errorf("Failed to set MTU for kube-bridge interface due to: %s", err.Error())
+			}
+		} else {
+			klog.Infof("Not setting MTU of kube-bridge interface")
+		}
+	}
 	// enable netfilter for the bridge
 	if _, err := exec.Command("modprobe", "br_netfilter").CombinedOutput(); err != nil {
-		glog.Errorf("Failed to enable netfilter for bridge. Network policies and service proxy may not work: %s", err.Error())
+		klog.Errorf("Failed to enable netfilter for bridge. Network policies and service proxy may not work: %s", err.Error())
 	}
 	if err = ioutil.WriteFile("/proc/sys/net/bridge/bridge-nf-call-iptables", []byte(strconv.Itoa(1)), 0640); err != nil {
-		glog.Errorf("Failed to enable iptables for bridge. Network policies and service proxy may not work: %s", err.Error())
+		klog.Errorf("Failed to enable iptables for bridge. Network policies and service proxy may not work: %s", err.Error())
 	}
 	if nrc.isIpv6 {
 		if err = ioutil.WriteFile("/proc/sys/net/bridge/bridge-nf-call-ip6tables", []byte(strconv.Itoa(1)), 0640); err != nil {
-			glog.Errorf("Failed to enable ip6tables for bridge. Network policies and service proxy may not work: %s", err.Error())
+			klog.Errorf("Failed to enable ip6tables for bridge. Network policies and service proxy may not work: %s", err.Error())
 		}
 
 	}
@@ -221,19 +248,19 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 	defer t.Stop()
 	defer wg.Done()
 
-	glog.Infof("Starting network route controller")
+	klog.Infof("Starting network route controller")
 
 	// Wait till we are ready to launch BGP server
 	for {
-		err := nrc.startBgpServer()
+		err := nrc.startBgpServer(true)
 		if err != nil {
-			glog.Errorf("Failed to start node BGP server: %s", err)
+			klog.Errorf("Failed to start node BGP server: %s", err)
 			select {
 			case <-stopCh:
-				glog.Infof("Shutting down network routes controller")
+				klog.Infof("Shutting down network routes controller")
 				return
 			case <-t.C:
-				glog.Infof("Retrying start of node BGP server")
+				klog.Infof("Retrying start of node BGP server")
 				continue
 			}
 		} else {
@@ -243,7 +270,12 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 
 	nrc.bgpServerStarted = true
 	if !nrc.bgpGracefulRestart {
-		defer nrc.bgpServer.Shutdown()
+		defer func() {
+			err := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+			if err != nil {
+				klog.Errorf("error shutting down BGP server: %s", err)
+			}
+		}()
 	}
 
 	// loop forever till notified to stop on stopCh
@@ -251,45 +283,45 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 		var err error
 		select {
 		case <-stopCh:
-			glog.Infof("Shutting down network routes controller")
+			klog.Infof("Shutting down network routes controller")
 			return
 		default:
 		}
 
 		// Update ipset entries
 		if nrc.enablePodEgress || nrc.enableOverlays {
-			glog.V(1).Info("Syncing ipsets")
+			klog.V(1).Info("Syncing ipsets")
 			err = nrc.syncNodeIPSets()
 			if err != nil {
-				glog.Errorf("Error synchronizing ipsets: %s", err.Error())
+				klog.Errorf("Error synchronizing ipsets: %s", err.Error())
 			}
 		}
 
 		// enable IP forwarding for the packets coming in/out from the pods
 		err = nrc.enableForwarding()
 		if err != nil {
-			glog.Errorf("Failed to enable IP forwarding of traffic from pods: %s", err.Error())
+			klog.Errorf("Failed to enable IP forwarding of traffic from pods: %s", err.Error())
 		}
 
 		// advertise or withdraw IPs for the services to be reachable via host
 		toAdvertise, toWithdraw, err := nrc.getActiveVIPs()
 		if err != nil {
-			glog.Errorf("failed to get routes to advertise/withdraw %s", err)
+			klog.Errorf("failed to get routes to advertise/withdraw %s", err)
 		}
 
-		glog.V(1).Infof("Performing periodic sync of service VIP routes")
+		klog.V(1).Infof("Performing periodic sync of service VIP routes")
 		nrc.advertiseVIPs(toAdvertise)
 		nrc.withdrawVIPs(toWithdraw)
 
-		glog.V(1).Info("Performing periodic sync of pod CIDR routes")
+		klog.V(1).Info("Performing periodic sync of pod CIDR routes")
 		err = nrc.advertisePodRoute()
 		if err != nil {
-			glog.Errorf("Error advertising route: %s", err.Error())
+			klog.Errorf("Error advertising route: %s", err.Error())
 		}
 
 		err = nrc.AddPolicies()
 		if err != nil {
-			glog.Errorf("Error adding BGP policies: %s", err.Error())
+			klog.Errorf("Error adding BGP policies: %s", err.Error())
 		}
 
 		if nrc.bgpEnableInternal {
@@ -299,13 +331,13 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 		if err == nil {
 			healthcheck.SendHeartBeat(healthChan, "NRC")
 		} else {
-			glog.Errorf("Error during periodic sync in network routing controller. Error: " + err.Error())
-			glog.Errorf("Skipping sending heartbeat from network routing controller as periodic sync failed.")
+			klog.Errorf("Error during periodic sync in network routing controller. Error: " + err.Error())
+			klog.Errorf("Skipping sending heartbeat from network routing controller as periodic sync failed.")
 		}
 
 		select {
 		case <-stopCh:
-			glog.Infof("Shutting down network routes controller")
+			klog.Infof("Shutting down network routes controller")
 			return
 		case <-t.C:
 		}
@@ -315,50 +347,92 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 func (nrc *NetworkRoutingController) updateCNIConfig() {
 	cidr, err := utils.GetPodCidrFromCniSpec(nrc.cniConfFile)
 	if err != nil {
-		glog.Errorf("Failed to get pod CIDR from CNI conf file: %s", err)
+		klog.Errorf("Failed to get pod CIDR from CNI conf file: %s", err)
 	}
 
 	if reflect.DeepEqual(cidr, net.IPNet{}) {
-		glog.Infof("`subnet` in CNI conf file is empty so populating `subnet` in CNI conf file with pod CIDR assigned to the node obtained from node spec.")
+		klog.Infof("`subnet` in CNI conf file is empty so populating `subnet` in CNI conf file with pod CIDR assigned to the node obtained from node spec.")
 	}
 	cidrlen, _ := cidr.Mask.Size()
 	oldCidr := cidr.IP.String() + "/" + strconv.Itoa(cidrlen)
 
-	currentCidr, err := utils.GetPodCidrFromNodeSpec(nrc.clientset, nrc.hostnameOverride)
-	if err != nil {
-		glog.Fatalf("Failed to get pod CIDR from node spec. kube-router relies on kube-controller-manager to allocate pod CIDR for the node or an annotation `kube-router.io/pod-cidr`. Error: %v", err)
-	}
+	currentCidr := nrc.podCidr
 
 	if len(cidr.IP) == 0 || strings.Compare(oldCidr, currentCidr) != 0 {
 		err = utils.InsertPodCidrInCniSpec(nrc.cniConfFile, currentCidr)
 		if err != nil {
-			glog.Fatalf("Failed to insert `subnet`(pod CIDR) into CNI conf file: %s", err.Error())
+			klog.Fatalf("Failed to insert `subnet`(pod CIDR) into CNI conf file: %s", err.Error())
+		}
+	}
+
+	if nrc.autoMTU {
+		err = nrc.autoConfigureMTU()
+		if err != nil {
+			klog.Errorf("Failed to auto-configure MTU due to: %s", err.Error())
 		}
 	}
 }
 
-func (nrc *NetworkRoutingController) watchBgpUpdates() {
-	watcher := nrc.bgpServer.Watch(gobgp.WatchBestPath(false))
-	for {
-		select {
-		case ev := <-watcher.Event():
-			switch msg := ev.(type) {
-			case *gobgp.WatchEventBestPath:
-				glog.V(3).Info("Processing bgp route advertisement from peer")
-				if nrc.MetricsEnabled {
-					metrics.ControllerBGPadvertisementsReceived.Inc()
-				}
-				for _, path := range msg.PathList {
-					if path.IsLocal() {
-						continue
-					}
-					if err := nrc.injectRoute(path); err != nil {
-						glog.Errorf("Failed to inject routes due to: " + err.Error())
-						continue
-					}
-				}
+func (nrc *NetworkRoutingController) autoConfigureMTU() error {
+	mtu, err := utils.GetMTUFromNodeIP(nrc.nodeIP, nrc.enableOverlays)
+	if err != nil {
+		return fmt.Errorf("failed to generate MTU: %s", err.Error())
+	}
+	file, err := ioutil.ReadFile(nrc.cniConfFile)
+	if err != nil {
+		return fmt.Errorf("failed to load CNI conf file: %s", err.Error())
+	}
+	var config interface{}
+	err = json.Unmarshal(file, &config)
+	if err != nil {
+		return fmt.Errorf("failed to parse JSON from CNI conf file: %s", err.Error())
+	}
+	if strings.HasSuffix(nrc.cniConfFile, ".conflist") {
+		configMap := config.(map[string]interface{})
+		for key := range configMap {
+			if key != "plugins" {
+				continue
+			}
+			pluginConfigs := configMap["plugins"].([]interface{})
+			for _, pluginConfig := range pluginConfigs {
+				pluginConfigMap := pluginConfig.(map[string]interface{})
+				pluginConfigMap["mtu"] = mtu
 			}
 		}
+	} else {
+		pluginConfig := config.(map[string]interface{})
+		pluginConfig["mtu"] = mtu
+	}
+	configJSON, _ := json.Marshal(config)
+	err = ioutil.WriteFile(nrc.cniConfFile, configJSON, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to insert `mtu` into CNI conf file: %s", err.Error())
+	}
+	return nil
+}
+
+func (nrc *NetworkRoutingController) watchBgpUpdates() {
+	pathWatch := func(path *gobgpapi.Path) {
+		if nrc.MetricsEnabled {
+			metrics.ControllerBGPadvertisementsReceived.Inc()
+		}
+		if path.NeighborIp == "<nil>" {
+			return
+		}
+		klog.V(2).Infof("Processing bgp route advertisement from peer: %s", path.NeighborIp)
+		if err := nrc.injectRoute(path); err != nil {
+			klog.Errorf("Failed to inject routes due to: " + err.Error())
+		}
+	}
+	err := nrc.bgpServer.MonitorTable(context.Background(), &gobgpapi.MonitorTableRequest{
+		TableType: gobgpapi.TableType_GLOBAL,
+		Family: &gobgpapi.Family{
+			Afi:  gobgpapi.Family_AFI_IP,
+			Safi: gobgpapi.Family_SAFI_UNICAST,
+		},
+	}, pathWatch)
+	if err != nil {
+		klog.Errorf("failed to register monitor global routing table callback due to : " + err.Error())
 	}
 }
 
@@ -366,99 +440,153 @@ func (nrc *NetworkRoutingController) advertisePodRoute() error {
 	if nrc.MetricsEnabled {
 		metrics.ControllerBGPadvertisementsSent.Inc()
 	}
-	cidr, err := utils.GetPodCidrFromNodeSpec(nrc.clientset, nrc.hostnameOverride)
-	if err != nil {
-		return err
-	}
 
-	cidrStr := strings.Split(cidr, "/")
+	cidrStr := strings.Split(nrc.podCidr, "/")
 	subnet := cidrStr[0]
-	cidrLen, _ := strconv.Atoi(cidrStr[1])
+	cidrLen, err := strconv.Atoi(cidrStr[1])
+	if err != nil || cidrLen < 0 || cidrLen > 32 {
+		return fmt.Errorf("the pod CIDR IP given is not a proper mask: %d", cidrLen)
+	}
 	if nrc.isIpv6 {
-		prefixes := []bgp.AddrPrefixInterface{bgp.NewIPv6AddrPrefix(uint8(cidrLen), subnet)}
-		attrs := []bgp.PathAttributeInterface{
-			bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
-			// This requires some research.
-			// For ipv6 what should be next-hop value? According to	 this https://www.noction.com/blog/bgp-next-hop
-			// using the link-local	 address may be more appropriate.
-			bgp.NewPathAttributeMpReachNLRI(nrc.nodeIP.String(), prefixes),
+		klog.V(2).Infof("Advertising route: '%s/%d via %s' to peers", subnet, cidrLen, nrc.nodeIP.String())
+
+		v6Family := &gobgpapi.Family{
+			Afi:  gobgpapi.Family_AFI_IP6,
+			Safi: gobgpapi.Family_SAFI_UNICAST,
 		}
-
-		glog.V(2).Infof("Advertising route: '%s/%s via %s' to peers using attribute: %+q", subnet, strconv.Itoa(cidrLen), nrc.nodeIP.String(), attrs)
-
-		if _, err := nrc.bgpServer.AddPath("", []*table.Path{table.NewPath(nil, bgp.NewIPv6AddrPrefix(uint8(cidrLen),
-			subnet), false, attrs, time.Now(), false)}); err != nil {
+		nlri, _ := ptypes.MarshalAny(&gobgpapi.IPAddressPrefix{
+			PrefixLen: uint32(cidrLen),
+			Prefix:    cidrStr[0],
+		})
+		a1, _ := ptypes.MarshalAny(&gobgpapi.OriginAttribute{
+			Origin: 0,
+		})
+		v6Attrs, _ := ptypes.MarshalAny(&gobgpapi.MpReachNLRIAttribute{
+			Family:   v6Family,
+			NextHops: []string{nrc.nodeIP.String()},
+			Nlris:    []*any.Any{nlri},
+		})
+		_, err := nrc.bgpServer.AddPath(context.Background(), &gobgpapi.AddPathRequest{
+			Path: &gobgpapi.Path{
+				Family: v6Family,
+				Nlri:   nlri,
+				Pattrs: []*any.Any{a1, v6Attrs},
+			},
+		})
+		if err != nil {
 			return fmt.Errorf(err.Error())
 		}
 	} else {
-		attrs := []bgp.PathAttributeInterface{
-			bgp.NewPathAttributeOrigin(0),
-			bgp.NewPathAttributeNextHop(nrc.nodeIP.String()),
-		}
 
-		glog.V(2).Infof("Advertising route: '%s/%s via %s' to peers", subnet, strconv.Itoa(cidrLen), nrc.nodeIP.String())
+		klog.V(2).Infof("Advertising route: '%s/%d via %s' to peers", subnet, cidrLen, nrc.nodeIP.String())
+		nlri, _ := ptypes.MarshalAny(&gobgpapi.IPAddressPrefix{
+			PrefixLen: uint32(cidrLen),
+			Prefix:    cidrStr[0],
+		})
 
-		if _, err := nrc.bgpServer.AddPath("", []*table.Path{table.NewPath(nil, bgp.NewIPAddrPrefix(uint8(cidrLen),
-			subnet), false, attrs, time.Now(), false)}); err != nil {
+		a1, _ := ptypes.MarshalAny(&gobgpapi.OriginAttribute{
+			Origin: 0,
+		})
+		a2, _ := ptypes.MarshalAny(&gobgpapi.NextHopAttribute{
+			NextHop: nrc.nodeIP.String(),
+		})
+		attrs := []*any.Any{a1, a2}
+
+		_, err := nrc.bgpServer.AddPath(context.Background(), &gobgpapi.AddPathRequest{
+			Path: &gobgpapi.Path{
+				Family: &gobgpapi.Family{Afi: gobgpapi.Family_AFI_IP, Safi: gobgpapi.Family_SAFI_UNICAST},
+				Nlri:   nlri,
+				Pattrs: attrs,
+			},
+		})
+		if err != nil {
 			return fmt.Errorf(err.Error())
 		}
 	}
 	return nil
 }
 
-func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
-	nexthop := path.GetNexthop()
+func (nrc *NetworkRoutingController) injectRoute(path *gobgpapi.Path) error {
+	klog.V(2).Infof("injectRoute Path Looks Like: %s", path.String())
+	var nextHop net.IP
+out:
+	for _, pAttr := range path.GetPattrs() {
+		var value ptypes.DynamicAny
+		if err := ptypes.UnmarshalAny(pAttr, &value); err != nil {
+			return fmt.Errorf("failed to unmarshal path attribute: %s", err)
+		}
+		switch a := value.Message.(type) {
+		case *gobgpapi.NextHopAttribute:
+			nextHop = net.ParseIP(a.NextHop).To4()
+			if nextHop == nil {
+				if nextHop = net.ParseIP(a.NextHop).To16(); nextHop == nil {
+					return fmt.Errorf("invalid nextHop address: %s", a.NextHop)
+				}
+			}
+			break out
+		}
+	}
+	if nextHop == nil {
+		return fmt.Errorf("could not parse next hop received from GoBGP for path: %s", path)
+	}
 	nlri := path.GetNlri()
-	dst, _ := netlink.ParseIPNet(nlri.String())
+	var prefix gobgpapi.IPAddressPrefix
+	err := ptypes.UnmarshalAny(nlri, &prefix)
+	if err != nil {
+		return fmt.Errorf("invalid nlri in advertised path")
+	}
+	dst, err := netlink.ParseIPNet(prefix.Prefix + "/" + fmt.Sprint(prefix.PrefixLen))
+	if err != nil {
+		return fmt.Errorf("invalid nlri in advertised path")
+	}
 	var route *netlink.Route
 
-	tunnelName := generateTunnelName(nexthop.String())
-	sameSubnet := nrc.nodeSubnet.Contains(nexthop)
+	tunnelName := generateTunnelName(nextHop.String())
+	sameSubnet := nrc.nodeSubnet.Contains(nextHop)
 
 	// cleanup route and tunnel if overlay is disabled or node is in same subnet and overlay-type is set to 'subnet'
 	if !nrc.enableOverlays || (sameSubnet && nrc.overlayType == "subnet") {
-		glog.Infof("Cleaning up old routes if there are any")
+		klog.Infof("Cleaning up old routes if there are any")
 		routes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, &netlink.Route{
 			Dst: dst, Protocol: 0x11,
 		}, netlink.RT_FILTER_DST|netlink.RT_FILTER_PROTOCOL)
 		if err != nil {
-			glog.Errorf("Failed to get routes from netlink")
+			klog.Errorf("Failed to get routes from netlink")
 		}
 		for i, r := range routes {
-			glog.V(2).Infof("Found route to remove: %s", r.String())
+			klog.V(2).Infof("Found route to remove: %s", r.String())
 			if err := netlink.RouteDel(&routes[i]); err != nil {
-				glog.Errorf("Failed to remove route due to " + err.Error())
+				klog.Errorf("Failed to remove route due to " + err.Error())
 			}
 		}
 
-		glog.Infof("Cleaning up if there is any existing tunnel interface for the node")
+		klog.Infof("Cleaning up if there is any existing tunnel interface for the node")
 		if link, err := netlink.LinkByName(tunnelName); err == nil {
 			if err = netlink.LinkDel(link); err != nil {
-				glog.Errorf("Failed to delete tunnel link for the node due to " + err.Error())
+				klog.Errorf("Failed to delete tunnel link for the node due to " + err.Error())
 			}
 		}
 	}
 
 	// create IPIP tunnels only when node is not in same subnet or overlay-type is set to 'full'
-	// prevent creation when --override-nexthop=true as well
 	// if the user has disabled overlays, don't create tunnels
-	if (!sameSubnet || nrc.overlayType == "full") && !nrc.overrideNextHop && nrc.enableOverlays {
+	if (!sameSubnet || nrc.overlayType == "full") && nrc.enableOverlays {
 		// create ip-in-ip tunnel and inject route as overlay is enabled
 		var link netlink.Link
 		var err error
 		link, err = netlink.LinkByName(tunnelName)
 		if err != nil {
 			out, err := exec.Command("ip", "tunnel", "add", tunnelName, "mode", "ipip", "local", nrc.nodeIP.String(),
-				"remote", nexthop.String(), "dev", nrc.nodeInterface).CombinedOutput()
+				"remote", nextHop.String(), "dev", nrc.nodeInterface).CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("Route not injected for the route advertised by the node %s "+
+				return fmt.Errorf("route not injected for the route advertised by the node %s "+
 					"Failed to create tunnel interface %s. error: %s, output: %s",
-					nexthop.String(), tunnelName, err, string(out))
+					nextHop, tunnelName, err, string(out))
 			}
 
 			link, err = netlink.LinkByName(tunnelName)
 			if err != nil {
-				return fmt.Errorf("Route not injected for the route advertised by the node %s "+
+				return fmt.Errorf("route not injected for the route advertised by the node %s "+
 					"Failed to get tunnel interface by name error: %s", tunnelName, err)
 			}
 			if err := netlink.LinkSetUp(link); err != nil {
@@ -469,16 +597,12 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 				return errors.New("Failed to set MTU of tunnel interface " + tunnelName + " up due to: " + err.Error())
 			}
 		} else {
-			glog.Infof("Tunnel interface: " + tunnelName + " for the node " + nexthop.String() + " already exists.")
+			klog.Infof("Tunnel interface: " + tunnelName + " for the node " + nextHop.String() + " already exists.")
 		}
 
 		out, err := exec.Command("ip", "route", "list", "table", customRouteTableID).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("Failed to verify if route already exists in %s table: %s",
-				customRouteTableName, err.Error())
-		}
-		if !strings.Contains(string(out), "dev "+tunnelName+" scope") {
-			if out, err = exec.Command("ip", "route", "add", nexthop.String(), "dev", tunnelName, "table",
+		if err != nil || !strings.Contains(string(out), "dev "+tunnelName+" scope") {
+			if out, err = exec.Command("ip", "route", "add", nextHop.String(), "dev", tunnelName, "table",
 				customRouteTableID).CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to add route in custom route table, err: %s, output: %s", err, string(out))
 			}
@@ -493,7 +617,7 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 	} else if sameSubnet {
 		route = &netlink.Route{
 			Dst:      dst,
-			Gw:       nexthop,
+			Gw:       nextHop,
 			Protocol: 0x11,
 		}
 	} else {
@@ -501,10 +625,10 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 	}
 
 	if path.IsWithdraw {
-		glog.V(2).Infof("Removing route: '%s via %s' from peer in the routing table", dst, nexthop)
+		klog.V(2).Infof("Removing route: '%s via %s' from peer in the routing table", dst, nextHop)
 		return netlink.RouteDel(route)
 	}
-	glog.V(2).Infof("Inject route: '%s via %s' from peer to routing table", dst, nexthop)
+	klog.V(2).Infof("Inject route: '%s via %s' from peer to routing table", dst, nextHop)
 	return netlink.RouteReplace(route)
 }
 
@@ -513,58 +637,73 @@ func (nrc *NetworkRoutingController) Cleanup() {
 	// Pod egress cleanup
 	err := nrc.deletePodEgressRule()
 	if err != nil {
-		glog.Warningf("Error deleting Pod egress iptables rule: %s", err.Error())
+		klog.Warningf("Error deleting Pod egress iptables rule: %s", err.Error())
 	}
 
 	err = nrc.deleteBadPodEgressRules()
 	if err != nil {
-		glog.Warningf("Error deleting Pod egress iptables rule: %s", err.Error())
+		klog.Warningf("Error deleting Pod egress iptables rule: %s", err.Error())
 	}
 
 	// delete all ipsets created by kube-router
+	klog.V(1).Infof("Attempting to attain ipset mutex lock")
+	nrc.ipsetMutex.Lock()
+	klog.V(1).Infof("Attained ipset mutex lock, continuing...")
+	defer func() {
+		nrc.ipsetMutex.Unlock()
+		klog.V(1).Infof("Returned ipset mutex lock")
+	}()
 	ipset, err := utils.NewIPSet(nrc.isIpv6)
 	if err != nil {
-		glog.Errorf("Failed to clean up ipsets: " + err.Error())
+		klog.Errorf("Failed to clean up ipsets: " + err.Error())
+		return
 	}
 	err = ipset.Save()
 	if err != nil {
-		glog.Errorf("Failed to clean up ipsets: " + err.Error())
+		klog.Errorf("Failed to clean up ipsets: " + err.Error())
 	}
 	err = ipset.DestroyAllWithin()
 	if err != nil {
-		glog.Warningf("Error deleting ipset: %s", err.Error())
+		klog.Warningf("Error deleting ipset: %s", err.Error())
 	}
 }
 
 func (nrc *NetworkRoutingController) syncNodeIPSets() error {
+	var err error
 	start := time.Now()
 	defer func() {
 		if nrc.MetricsEnabled {
 			metrics.ControllerRoutesSyncTime.Observe(time.Since(start).Seconds())
 		}
 	}()
-	// Get the current list of the nodes from API server
-	nodes, err := nrc.clientset.CoreV1().Nodes().List(metav1.ListOptions{})
-	if err != nil {
-		return errors.New("Failed to list nodes from API server: " + err.Error())
-	}
+	klog.V(1).Infof("Attempting to attain ipset mutex lock")
+	nrc.ipsetMutex.Lock()
+	klog.V(1).Infof("Attained ipset mutex lock, continuing...")
+	defer func() {
+		nrc.ipsetMutex.Unlock()
+		klog.V(1).Infof("Returned ipset mutex lock")
+	}()
+
+	nodes := nrc.nodeLister.List()
 
 	// Collect active PodCIDR(s) and NodeIPs from nodes
 	currentPodCidrs := make([]string, 0)
 	currentNodeIPs := make([]string, 0)
-	for _, node := range nodes.Items {
+	for _, obj := range nodes {
+		node := obj.(*v1core.Node)
 		podCIDR := node.GetAnnotations()["kube-router.io/pod-cidr"]
 		if podCIDR == "" {
 			podCIDR = node.Spec.PodCIDR
 		}
 		if podCIDR == "" {
-			glog.Warningf("Couldn't determine PodCIDR of the %v node", node.Name)
+			klog.Warningf("Couldn't determine PodCIDR of the %v node", node.Name)
 			continue
 		}
 		currentPodCidrs = append(currentPodCidrs, podCIDR)
-		nodeIP, err := utils.GetNodeIP(&node)
+		nodeIP, err := utils.GetNodeIP(node)
 		if err != nil {
-			return fmt.Errorf("Failed to find a node IP: %s", err)
+			klog.Errorf("Failed to find a node IP, cannot add to node ipset which could affect routing: %v", err)
+			continue
 		}
 		currentNodeIPs = append(currentNodeIPs, nodeIP.String())
 	}
@@ -572,31 +711,39 @@ func (nrc *NetworkRoutingController) syncNodeIPSets() error {
 	// Syncing Pod subnet ipset entries
 	psSet := nrc.ipSetHandler.Get(podSubnetsIPSetName)
 	if psSet == nil {
-		glog.Infof("Creating missing ipset \"%s\"", podSubnetsIPSetName)
+		klog.Infof("Creating missing ipset \"%s\"", podSubnetsIPSetName)
 		_, err = nrc.ipSetHandler.Create(podSubnetsIPSetName, utils.OptionTimeout, "0")
 		if err != nil {
 			return fmt.Errorf("ipset \"%s\" not found in controller instance",
 				podSubnetsIPSetName)
 		}
+		psSet = nrc.ipSetHandler.Get(podSubnetsIPSetName)
+		if nil == psSet {
+			return fmt.Errorf("failed to get ipsethandler for ipset \"%s\"", podSubnetsIPSetName)
+		}
 	}
-	err = psSet.Refresh(currentPodCidrs, psSet.Options...)
+	err = psSet.Refresh(currentPodCidrs)
 	if err != nil {
-		return fmt.Errorf("Failed to sync Pod Subnets ipset: %s", err)
+		return fmt.Errorf("failed to sync Pod Subnets ipset: %s", err)
 	}
 
 	// Syncing Node Addresses ipset entries
 	naSet := nrc.ipSetHandler.Get(nodeAddrsIPSetName)
 	if naSet == nil {
-		glog.Infof("Creating missing ipset \"%s\"", nodeAddrsIPSetName)
+		klog.Infof("Creating missing ipset \"%s\"", nodeAddrsIPSetName)
 		_, err = nrc.ipSetHandler.Create(nodeAddrsIPSetName, utils.OptionTimeout, "0")
 		if err != nil {
 			return fmt.Errorf("ipset \"%s\" not found in controller instance",
 				nodeAddrsIPSetName)
 		}
+		naSet = nrc.ipSetHandler.Get(nodeAddrsIPSetName)
+		if nil == naSet {
+			return fmt.Errorf("failed to get ipsethandler for ipset \"%s\"", nodeAddrsIPSetName)
+		}
 	}
-	err = naSet.Refresh(currentNodeIPs, naSet.Options...)
+	err = naSet.Refresh(currentNodeIPs)
 	if err != nil {
-		return fmt.Errorf("Failed to sync Node Addresses ipset: %s", err)
+		return fmt.Errorf("failed to sync Node Addresses ipset: %s", err)
 	}
 
 	return nil
@@ -605,9 +752,8 @@ func (nrc *NetworkRoutingController) syncNodeIPSets() error {
 func (nrc *NetworkRoutingController) newIptablesCmdHandler() (*iptables.IPTables, error) {
 	if nrc.isIpv6 {
 		return iptables.NewWithProtocol(iptables.ProtocolIPv6)
-	} else {
-		return iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	}
+	return iptables.NewWithProtocol(iptables.ProtocolIPv4)
 }
 
 // ensure there is rule in filter table and FORWARD chain to permit in/out traffic from pods
@@ -621,12 +767,12 @@ func (nrc *NetworkRoutingController) enableForwarding() error {
 	args := []string{"-m", "comment", "--comment", comment, "-i", "kube-bridge", "-j", "ACCEPT"}
 	exists, err := iptablesCmdHandler.Exists("filter", "FORWARD", args...)
 	if err != nil {
-		return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+		return fmt.Errorf("failed to run iptables command: %s", err.Error())
 	}
 	if !exists {
 		err := iptablesCmdHandler.Insert("filter", "FORWARD", 1, args...)
 		if err != nil {
-			return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+			return fmt.Errorf("failed to run iptables command: %s", err.Error())
 		}
 	}
 
@@ -634,12 +780,12 @@ func (nrc *NetworkRoutingController) enableForwarding() error {
 	args = []string{"-m", "comment", "--comment", comment, "-o", "kube-bridge", "-j", "ACCEPT"}
 	exists, err = iptablesCmdHandler.Exists("filter", "FORWARD", args...)
 	if err != nil {
-		return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+		return fmt.Errorf("failed to run iptables command: %s", err.Error())
 	}
 	if !exists {
 		err = iptablesCmdHandler.Insert("filter", "FORWARD", 1, args...)
 		if err != nil {
-			return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+			return fmt.Errorf("failed to run iptables command: %s", err.Error())
 		}
 	}
 
@@ -647,23 +793,23 @@ func (nrc *NetworkRoutingController) enableForwarding() error {
 	args = []string{"-m", "comment", "--comment", comment, "-o", nrc.nodeInterface, "-j", "ACCEPT"}
 	exists, err = iptablesCmdHandler.Exists("filter", "FORWARD", args...)
 	if err != nil {
-		return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+		return fmt.Errorf("failed to run iptables command: %s", err.Error())
 	}
 	if !exists {
 		err = iptablesCmdHandler.Insert("filter", "FORWARD", 1, args...)
 		if err != nil {
-			return fmt.Errorf("Failed to run iptables command: %s", err.Error())
+			return fmt.Errorf("failed to run iptables command: %s", err.Error())
 		}
 	}
 
 	return nil
 }
 
-func (nrc *NetworkRoutingController) startBgpServer() error {
+func (nrc *NetworkRoutingController) startBgpServer(grpcServer bool) error {
 	var nodeAsnNumber uint32
 	node, err := utils.GetNodeObject(nrc.clientset, nrc.hostnameOverride)
 	if err != nil {
-		return errors.New("Failed to get node object from api server: " + err.Error())
+		return errors.New("failed to get node object from api server: " + err.Error())
 	}
 
 	if nrc.bgpFullMeshMode {
@@ -671,33 +817,37 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 	} else {
 		nodeasn, ok := node.ObjectMeta.Annotations[nodeASNAnnotation]
 		if !ok {
-			return errors.New("Could not find ASN number for the node. " +
-				"Node needs to be annotated with ASN number details to start BGP server.")
+			return errors.New("could not find ASN number for the node. " +
+				"Node needs to be annotated with ASN number details to start BGP server")
 		}
-		glog.Infof("Found ASN for the node to be %s from the node annotations", nodeasn)
+		klog.Infof("Found ASN for the node to be %s from the node annotations", nodeasn)
 		asnNo, err := strconv.ParseUint(nodeasn, 0, 32)
 		if err != nil {
-			return errors.New("Failed to parse ASN number specified for the the node")
+			return errors.New("failed to parse ASN number specified for the the node")
 		}
 		nodeAsnNumber = uint32(asnNo)
 		nrc.nodeAsnNumber = nodeAsnNumber
 	}
 
 	if clusterid, ok := node.ObjectMeta.Annotations[rrServerAnnotation]; ok {
-		glog.Infof("Found rr.server for the node to be %s from the node annotation", clusterid)
-		clusterID, err := strconv.ParseUint(clusterid, 0, 32)
+		klog.Infof("Found rr.server for the node to be %s from the node annotation", clusterid)
+		_, err := strconv.ParseUint(clusterid, 0, 32)
 		if err != nil {
-			return errors.New("Failed to parse rr.server clusterId number specified for the the node")
+			if ip := net.ParseIP(clusterid).To4(); ip == nil {
+				return errors.New("failed to parse rr.server clusterId specified for the node")
+			}
 		}
-		nrc.bgpClusterID = uint32(clusterID)
+		nrc.bgpClusterID = clusterid
 		nrc.bgpRRServer = true
 	} else if clusterid, ok := node.ObjectMeta.Annotations[rrClientAnnotation]; ok {
-		glog.Infof("Found rr.client for the node to be %s from the node annotation", clusterid)
-		clusterID, err := strconv.ParseUint(clusterid, 0, 32)
+		klog.Infof("Found rr.client for the node to be %s from the node annotation", clusterid)
+		_, err := strconv.ParseUint(clusterid, 0, 32)
 		if err != nil {
-			return errors.New("Failed to parse rr.client clusterId number specified for the the node")
+			if ip := net.ParseIP(clusterid).To4(); ip == nil {
+				return errors.New("failed to parse rr.client clusterId specified for the node")
+			}
 		}
-		nrc.bgpClusterID = uint32(clusterID)
+		nrc.bgpClusterID = clusterid
 		nrc.bgpRRClient = true
 	}
 
@@ -705,17 +855,17 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 		prependRepeatN, okRepeatN := node.ObjectMeta.Annotations[pathPrependRepeatNAnnotation]
 
 		if !okRepeatN {
-			return fmt.Errorf("Both %s and %s must be set", pathPrependASNAnnotation, pathPrependRepeatNAnnotation)
+			return fmt.Errorf("both %s and %s must be set", pathPrependASNAnnotation, pathPrependRepeatNAnnotation)
 		}
 
 		_, err := strconv.ParseUint(prependASN, 0, 32)
 		if err != nil {
-			return errors.New("Failed to parse ASN number specified to prepend")
+			return errors.New("failed to parse ASN number specified to prepend")
 		}
 
 		repeatN, err := strconv.ParseUint(prependRepeatN, 0, 8)
 		if err != nil {
-			return errors.New("Failed to parse number of times ASN should be repeated")
+			return errors.New("failed to parse number of times ASN should be repeated")
 		}
 
 		nrc.pathPrepend = true
@@ -723,11 +873,34 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 		nrc.pathPrependCount = uint8(repeatN)
 	}
 
-	nrc.bgpServer = gobgp.NewBgpServer()
-	go nrc.bgpServer.Serve()
+	var nodeCommunities []string
+	nodeBGPCommunitiesAnnotation, ok := node.ObjectMeta.Annotations[nodeCommunitiesAnnotation]
+	if !ok {
+		klog.V(1).Info("Did not find any BGP communities on current node's annotations. " +
+			"Not exporting communities.")
+	} else {
+		nodeCommunities = stringToSlice(nodeBGPCommunitiesAnnotation, ",")
+		for _, nodeCommunity := range nodeCommunities {
+			if err = validateCommunity(nodeCommunity); err != nil {
+				klog.Warningf("cannot add BGP community '%s' from node annotation as it does not appear "+
+					"to be a valid community identifier", nodeCommunity)
+				continue
+			}
+			klog.V(1).Infof("Adding the node community found from node annotation: %s", nodeCommunity)
+			nrc.nodeCommunities = append(nrc.nodeCommunities, nodeCommunity)
+		}
+		if len(nrc.nodeCommunities) < 1 {
+			klog.Warningf("Found a community specified via annotation %s with value %s but none could be "+
+				"validated", nodeCommunitiesAnnotation, nodeBGPCommunitiesAnnotation)
+		}
+	}
 
-	g := bgpapi.NewGrpcServer(nrc.bgpServer, nrc.nodeIP.String()+":50051"+","+"127.0.0.1:50051")
-	go g.Serve()
+	if grpcServer {
+		nrc.bgpServer = gobgp.NewBgpServer(gobgp.GrpcListenAddress(nrc.nodeIP.String() + ":50051" + "," + "127.0.0.1:50051"))
+	} else {
+		nrc.bgpServer = gobgp.NewBgpServer()
+	}
+	go nrc.bgpServer.Serve()
 
 	var localAddressList []string
 
@@ -739,17 +912,15 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 		localAddressList = append(localAddressList, "::1")
 	}
 
-	global := &config.Global{
-		Config: config.GlobalConfig{
-			As:               nodeAsnNumber,
-			RouterId:         nrc.routerId,
-			LocalAddressList: localAddressList,
-			Port:             int32(nrc.bgpPort),
-		},
+	global := &gobgpapi.Global{
+		As:              nodeAsnNumber,
+		RouterId:        nrc.routerID,
+		ListenAddresses: localAddressList,
+		ListenPort:      int32(nrc.bgpPort),
 	}
 
-	if err := nrc.bgpServer.Start(global); err != nil {
-		return errors.New("Failed to start BGP server due to : " + err.Error())
+	if err := nrc.bgpServer.StartBgp(context.Background(), &gobgpapi.StartBgpRequest{Global: global}); err != nil {
+		return errors.New("failed to start BGP server due to : " + err.Error())
 	}
 
 	go nrc.watchBgpUpdates()
@@ -760,40 +931,50 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 		// Get Global Peer Router ASN configs
 		nodeBgpPeerAsnsAnnotation, ok := node.ObjectMeta.Annotations[peerASNAnnotation]
 		if !ok {
-			glog.Infof("Could not find BGP peer info for the node in the node annotations so skipping configuring peer.")
+			klog.Infof("Could not find BGP peer info for the node in the node annotations so skipping configuring peer.")
 			return nil
 		}
 
 		asnStrings := stringToSlice(nodeBgpPeerAsnsAnnotation, ",")
 		peerASNs, err := stringSliceToUInt32(asnStrings)
 		if err != nil {
-			nrc.bgpServer.Stop()
-			return fmt.Errorf("Failed to parse node's Peer ASN Numbers Annotation: %s", err)
+			err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+			if err2 != nil {
+				klog.Errorf("Failed to stop bgpServer: %s", err2)
+			}
+			return fmt.Errorf("failed to parse node's Peer ASN Numbers Annotation: %s", err)
 		}
 
 		// Get Global Peer Router IP Address configs
 		nodeBgpPeersAnnotation, ok := node.ObjectMeta.Annotations[peerIPAnnotation]
 		if !ok {
-			glog.Infof("Could not find BGP peer info for the node in the node annotations so skipping configuring peer.")
+			klog.Infof("Could not find BGP peer info for the node in the node annotations so skipping configuring peer.")
 			return nil
 		}
 		ipStrings := stringToSlice(nodeBgpPeersAnnotation, ",")
 		peerIPs, err := stringSliceToIPs(ipStrings)
 		if err != nil {
-			nrc.bgpServer.Stop()
-			return fmt.Errorf("Failed to parse node's Peer Addresses Annotation: %s", err)
+			err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+			if err2 != nil {
+				klog.Errorf("Failed to stop bgpServer: %s", err2)
+			}
+
+			return fmt.Errorf("failed to parse node's Peer Addresses Annotation: %s", err)
 		}
 
 		// Get Global Peer Router ASN configs
 		nodeBgpPeerPortsAnnotation, ok := node.ObjectMeta.Annotations[peerPortAnnotation]
 		// Default to default BGP port if port annotation is not found
-		var peerPorts = make([]uint16, 0)
+		var peerPorts = make([]uint32, 0)
 		if ok {
 			portStrings := stringToSlice(nodeBgpPeerPortsAnnotation, ",")
-			peerPorts, err = stringSliceToUInt16(portStrings)
+			peerPorts, err = stringSliceToUInt32(portStrings)
 			if err != nil {
-				nrc.bgpServer.Stop()
-				return fmt.Errorf("Failed to parse node's Peer Port Numbers Annotation: %s", err)
+				err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+				if err2 != nil {
+					klog.Errorf("Failed to stop bgpServer: %s", err2)
+				}
+				return fmt.Errorf("failed to parse node's Peer Port Numbers Annotation: %s", err)
 			}
 		}
 
@@ -801,35 +982,47 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 		var peerPasswords []string
 		nodeBGPPasswordsAnnotation, ok := node.ObjectMeta.Annotations[peerPasswordAnnotation]
 		if !ok {
-			glog.Infof("Could not find BGP peer password info in the node's annotations. Assuming no passwords.")
+			klog.Infof("Could not find BGP peer password info in the node's annotations. Assuming no passwords.")
 		} else {
 			passStrings := stringToSlice(nodeBGPPasswordsAnnotation, ",")
 			peerPasswords, err = stringSliceB64Decode(passStrings)
 			if err != nil {
-				nrc.bgpServer.Stop()
-				return fmt.Errorf("Failed to parse node's Peer Passwords Annotation: %s", err)
+				err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+				if err2 != nil {
+					klog.Errorf("Failed to stop bgpServer: %s", err2)
+				}
+				return fmt.Errorf("failed to parse node's Peer Passwords Annotation")
 			}
 		}
 
 		// Create and set Global Peer Router complete configs
-		nrc.globalPeerRouters, err = newGlobalPeers(peerIPs, peerPorts, peerASNs, peerPasswords)
+		nrc.globalPeerRouters, err = newGlobalPeers(peerIPs, peerPorts, peerASNs, peerPasswords, nrc.bgpHoldtime)
 		if err != nil {
-			nrc.bgpServer.Stop()
-			return fmt.Errorf("Failed to process Global Peer Router configs: %s", err)
+			err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+			if err2 != nil {
+				klog.Errorf("Failed to stop bgpServer: %s", err2)
+			}
+
+			return fmt.Errorf("failed to process Global Peer Router configs: %s", err)
 		}
 
 		nrc.nodePeerRouters = ipStrings
 	}
 
 	if len(nrc.globalPeerRouters) != 0 {
-		err := connectToExternalBGPPeers(nrc.bgpServer, nrc.globalPeerRouters, nrc.bgpGracefulRestart, nrc.bgpGracefulRestartDeferralTime, nrc.peerMultihopTTL)
+		err := connectToExternalBGPPeers(nrc.bgpServer, nrc.globalPeerRouters, nrc.bgpGracefulRestart,
+			nrc.bgpGracefulRestartDeferralTime, nrc.bgpGracefulRestartTime, nrc.peerMultihopTTL)
 		if err != nil {
-			nrc.bgpServer.Stop()
-			return fmt.Errorf("Failed to peer with Global Peer Router(s): %s",
+			err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
+			if err2 != nil {
+				klog.Errorf("Failed to stop bgpServer: %s", err2)
+			}
+
+			return fmt.Errorf("failed to peer with Global Peer Router(s): %s",
 				err)
 		}
 	} else {
-		glog.Infof("No Global Peer Routers configured. Peering skipped.")
+		klog.Infof("No Global Peer Routers configured. Peering skipped.")
 	}
 
 	return nil
@@ -841,11 +1034,11 @@ func (nrc *NetworkRoutingController) startBgpServer() error {
 func NewNetworkRoutingController(clientset kubernetes.Interface,
 	kubeRouterConfig *options.KubeRouterConfig,
 	nodeInformer cache.SharedIndexInformer, svcInformer cache.SharedIndexInformer,
-	epInformer cache.SharedIndexInformer) (*NetworkRoutingController, error) {
+	epInformer cache.SharedIndexInformer, ipsetMutex *sync.Mutex) (*NetworkRoutingController, error) {
 
 	var err error
 
-	nrc := NetworkRoutingController{}
+	nrc := NetworkRoutingController{ipsetMutex: ipsetMutex}
 	if kubeRouterConfig.MetricsEnabled {
 		//Register the metrics for this controller
 		prometheus.MustRegister(metrics.ControllerBGPadvertisementsReceived)
@@ -860,7 +1053,8 @@ func NewNetworkRoutingController(clientset kubernetes.Interface,
 	nrc.bgpEnableInternal = kubeRouterConfig.EnableiBGP
 	nrc.bgpGracefulRestart = kubeRouterConfig.BGPGracefulRestart
 	nrc.bgpGracefulRestartDeferralTime = kubeRouterConfig.BGPGracefulRestartDeferralTime
-	nrc.peerMultihopTTL = kubeRouterConfig.PeerMultihopTtl
+	nrc.bgpGracefulRestartTime = kubeRouterConfig.BGPGracefulRestartTime
+	nrc.peerMultihopTTL = kubeRouterConfig.PeerMultihopTTL
 	nrc.enablePodEgress = kubeRouterConfig.EnablePodEgress
 	nrc.syncPeriod = kubeRouterConfig.RoutesSyncPeriod
 	nrc.overrideNextHop = kubeRouterConfig.OverrideNextHop
@@ -872,28 +1066,33 @@ func NewNetworkRoutingController(clientset kubernetes.Interface,
 	nrc.disableSrcDstCheck = kubeRouterConfig.DisableSrcDstCheck
 	nrc.initSrcDstCheckDone = false
 
+	nrc.bgpHoldtime = kubeRouterConfig.BGPHoldTime.Seconds()
+	if nrc.bgpHoldtime > 65536 || nrc.bgpHoldtime < 3 {
+		return nil, errors.New("this is an incorrect BGP holdtime range, holdtime must be in the range 3s to 18h12m16s")
+	}
+
 	nrc.hostnameOverride = kubeRouterConfig.HostnameOverride
 	node, err := utils.GetNodeObject(clientset, nrc.hostnameOverride)
 	if err != nil {
-		return nil, errors.New("Failed getting node object from API server: " + err.Error())
+		return nil, errors.New("failed getting node object from API server: " + err.Error())
 	}
 
 	nrc.nodeName = node.Name
 
 	nodeIP, err := utils.GetNodeIP(node)
 	if err != nil {
-		return nil, errors.New("Failed getting IP address from node object: " + err.Error())
+		return nil, errors.New("failed getting IP address from node object: " + err.Error())
 	}
 	nrc.nodeIP = nodeIP
 	nrc.isIpv6 = nodeIP.To4() == nil
 
-	if kubeRouterConfig.RouterId != "" {
-		nrc.routerId = kubeRouterConfig.RouterId
+	if kubeRouterConfig.RouterID != "" {
+		nrc.routerID = kubeRouterConfig.RouterID
 	} else {
 		if nrc.isIpv6 {
-			return nil, errors.New("Router-id must be specified in ipv6 operation")
+			return nil, errors.New("router-id must be specified in ipv6 operation")
 		}
-		nrc.routerId = nrc.nodeIP.String()
+		nrc.routerID = nrc.nodeIP.String()
 	}
 
 	// lets start with assumption we hace necessary IAM creds to access EC2 api
@@ -908,6 +1107,13 @@ func NewNetworkRoutingController(clientset kubernetes.Interface,
 			return nil, errors.New("CNI conf file " + nrc.cniConfFile + " does not exist.")
 		}
 	}
+
+	cidr, err := utils.GetPodCidrFromNodeSpec(clientset, nrc.hostnameOverride)
+	if err != nil {
+		klog.Fatalf("Failed to get pod CIDR from node spec. kube-router relies on kube-controller-manager to allocate pod CIDR for the node or an annotation `kube-router.io/pod-cidr`. Error: %v", err)
+		return nil, fmt.Errorf("failed to get pod CIDR details from Node.spec: %s", err.Error())
+	}
+	nrc.podCidr = cidr
 
 	nrc.ipSetHandler, err = utils.NewIPSet(nrc.isIpv6)
 	if err != nil {
@@ -931,19 +1137,21 @@ func NewNetworkRoutingController(clientset kubernetes.Interface,
 	if kubeRouterConfig.ClusterAsn != 0 {
 		if !((kubeRouterConfig.ClusterAsn >= 64512 && kubeRouterConfig.ClusterAsn <= 65535) ||
 			(kubeRouterConfig.ClusterAsn >= 4200000000 && kubeRouterConfig.ClusterAsn <= 4294967294)) {
-			return nil, errors.New("Invalid ASN number for cluster ASN")
+			return nil, errors.New("invalid ASN number for cluster ASN")
 		}
 		nrc.defaultNodeAsnNumber = uint32(kubeRouterConfig.ClusterAsn)
 	} else {
 		nrc.defaultNodeAsnNumber = 64512 // this magic number is first of the private ASN range, use it as default
 	}
 
-	nrc.advertiseClusterIP = kubeRouterConfig.AdvertiseClusterIp
-	nrc.advertiseExternalIP = kubeRouterConfig.AdvertiseExternalIp
-	nrc.advertiseLoadBalancerIP = kubeRouterConfig.AdvertiseLoadBalancerIp
+	nrc.advertiseClusterIP = kubeRouterConfig.AdvertiseClusterIP
+	nrc.advertiseExternalIP = kubeRouterConfig.AdvertiseExternalIP
+	nrc.advertiseLoadBalancerIP = kubeRouterConfig.AdvertiseLoadBalancerIP
 	nrc.advertisePodCidr = kubeRouterConfig.AdvertiseNodePodCidr
+	nrc.autoMTU = kubeRouterConfig.AutoMTU
 	nrc.enableOverlays = kubeRouterConfig.EnableOverlay
 	nrc.overlayType = kubeRouterConfig.OverlayType
+	nrc.CNIFirewallSetup = sync.NewCond(&sync.Mutex{})
 
 	nrc.bgpPort = kubeRouterConfig.BGPPort
 
@@ -954,43 +1162,53 @@ func NewNetworkRoutingController(clientset kubernetes.Interface,
 	}
 
 	// Convert uints to uint16s
-	peerPorts := make([]uint16, 0)
+	peerPorts := make([]uint32, 0)
 	for _, i := range kubeRouterConfig.PeerPorts {
-		peerPorts = append(peerPorts, uint16(i))
+		peerPorts = append(peerPorts, uint32(i))
 	}
 
-	// Decode base64 passwords
+	// PeerPasswords as cli params take precedence over password file
 	peerPasswords := make([]string, 0)
 	if len(kubeRouterConfig.PeerPasswords) != 0 {
 		peerPasswords, err = stringSliceB64Decode(kubeRouterConfig.PeerPasswords)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to parse CLI Peer Passwords flag: %s", err)
+			return nil, fmt.Errorf("failed to parse CLI Peer Passwords flag: %s", err)
+		}
+	} else if len(kubeRouterConfig.PeerPasswordsFile) != 0 {
+		// Contents of the pw file should be in the same format as pw from CLI arg
+		pwFileBytes, err := ioutil.ReadFile(kubeRouterConfig.PeerPasswordsFile)
+		if err != nil {
+			return nil, fmt.Errorf("error loading Peer Passwords File : %s", err)
+		}
+		pws := strings.Split(string(pwFileBytes), ",")
+		peerPasswords, err = stringSliceB64Decode(pws)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode CLI Peer Passwords file: %s", err)
 		}
 	}
 
-	nrc.globalPeerRouters, err = newGlobalPeers(kubeRouterConfig.PeerRouters, peerPorts,
-		peerASNs, peerPasswords)
+	nrc.globalPeerRouters, err = newGlobalPeers(kubeRouterConfig.PeerRouters, peerPorts, peerASNs, peerPasswords, nrc.bgpHoldtime)
 	if err != nil {
-		return nil, fmt.Errorf("Error processing Global Peer Router configs: %s", err)
+		return nil, fmt.Errorf("error processing Global Peer Router configs: %s", err)
 	}
 
 	nrc.nodeSubnet, nrc.nodeInterface, err = getNodeSubnet(nodeIP)
 	if err != nil {
-		return nil, errors.New("Failed find the subnet of the node IP and interface on" +
+		return nil, errors.New("failed find the subnet of the node IP and interface on" +
 			"which its configured: " + err.Error())
 	}
 
 	bgpLocalAddressListAnnotation, ok := node.ObjectMeta.Annotations[bgpLocalAddressAnnotation]
 	if !ok {
-		glog.Infof("Could not find annotation `kube-router.io/bgp-local-addresses` on node object so BGP will listen on node IP: %s address.", nrc.nodeIP.String())
+		klog.Infof("Could not find annotation `kube-router.io/bgp-local-addresses` on node object so BGP will listen on node IP: %s address.", nrc.nodeIP.String())
 		nrc.localAddressList = append(nrc.localAddressList, nrc.nodeIP.String())
 	} else {
-		glog.Infof("Found annotation `kube-router.io/bgp-local-addresses` on node object so BGP will listen on local IP's: %s", bgpLocalAddressListAnnotation)
+		klog.Infof("Found annotation `kube-router.io/bgp-local-addresses` on node object so BGP will listen on local IP's: %s", bgpLocalAddressListAnnotation)
 		localAddresses := stringToSlice(bgpLocalAddressListAnnotation, ",")
 		for _, addr := range localAddresses {
 			ip := net.ParseIP(addr)
 			if ip == nil {
-				glog.Fatalf("Invalid IP address %s specified in `kube-router.io/bgp-local-addresses`.", addr)
+				klog.Fatalf("Invalid IP address %s specified in `kube-router.io/bgp-local-addresses`.", addr)
 			}
 		}
 		nrc.localAddressList = append(nrc.localAddressList, localAddresses...)

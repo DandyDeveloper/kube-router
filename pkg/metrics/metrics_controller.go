@@ -1,19 +1,19 @@
 package metrics
 
 import (
-	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/cloudnativelabs/kube-router/pkg/healthcheck"
 	"github.com/cloudnativelabs/kube-router/pkg/options"
-	"github.com/golang/glog"
+	"github.com/cloudnativelabs/kube-router/pkg/version"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/net/context"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -21,6 +21,12 @@ const (
 )
 
 var (
+	// BuildInfo Expose version and other build information
+	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "build_info",
+		Help:      "Expose version and other build information",
+	}, []string{"goversion", "version"})
 	// ServiceTotalConn Total incoming connections made
 	ServiceTotalConn = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -93,6 +99,18 @@ var (
 		Name:      "controller_iptables_sync_time",
 		Help:      "Time it took for controller to sync iptables",
 	})
+	// ControllerIptablesSyncTotalTime Time it took for controller to sync iptables
+	ControllerIptablesSyncTotalTime = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "controller_iptables_sync_total_time",
+		Help:      "Time it took for controller to sync iptables as a counter",
+	})
+	// ControllerIptablesSyncTotalCount Number of times the controller synced iptables for individual pods
+	ControllerIptablesSyncTotalCount = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "controller_iptables_sync_total_count",
+		Help:      "Total number of times kube-router synced iptables",
+	})
 	// ControllerIpvsServicesSyncTime Time it took for controller to sync ipvs services
 	ControllerIpvsServicesSyncTime = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
@@ -147,17 +165,17 @@ var (
 type Controller struct {
 	MetricsPath string
 	MetricsPort uint16
-	mu          sync.Mutex
-	nodeIP      net.IP
 }
 
 // Run prometheus metrics controller
-func (mc *Controller) Run(healthChan chan<- *healthcheck.ControllerHeartbeat, stopCh <-chan struct{}, wg *sync.WaitGroup) error {
+func (mc *Controller) Run(healthChan chan<- *healthcheck.ControllerHeartbeat, stopCh <-chan struct{}, wg *sync.WaitGroup) {
 	t := time.NewTicker(3 * time.Second)
 	defer wg.Done()
-	glog.Info("Starting metrics controller")
+	klog.Info("Starting metrics controller")
 
 	// register metrics for this controller
+	BuildInfo.WithLabelValues(runtime.Version(), version.Version).Set(1)
+	prometheus.MustRegister(BuildInfo)
 	prometheus.MustRegister(ControllerIpvsMetricsExportTime)
 
 	srv := &http.Server{Addr: ":" + strconv.Itoa(int(mc.MetricsPort)), Handler: http.DefaultServeMux}
@@ -168,26 +186,26 @@ func (mc *Controller) Run(healthChan chan<- *healthcheck.ControllerHeartbeat, st
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			// cannot panic, because this probably is an intentional close
-			glog.Errorf("Metrics controller error: %s", err)
+			klog.Errorf("Metrics controller error: %s", err)
 		}
 	}()
 	for {
 		healthcheck.SendHeartBeat(healthChan, "MC")
 		select {
 		case <-stopCh:
-			glog.Infof("Shutting down metrics controller")
+			klog.Infof("Shutting down metrics controller")
 			if err := srv.Shutdown(context.Background()); err != nil {
-				glog.Errorf("could not shutdown: %v", err)
+				klog.Errorf("could not shutdown: %v", err)
 			}
-			return nil
+			return
 		case <-t.C:
-			glog.V(4).Info("Metrics controller tick")
+			klog.V(4).Info("Metrics controller tick")
 		}
 	}
 }
 
 // NewMetricsController returns new MetricController object
-func NewMetricsController(clientset kubernetes.Interface, config *options.KubeRouterConfig) (*Controller, error) {
+func NewMetricsController(config *options.KubeRouterConfig) (*Controller, error) {
 	mc := Controller{}
 	mc.MetricsPath = config.MetricsPath
 	mc.MetricsPort = config.MetricsPort

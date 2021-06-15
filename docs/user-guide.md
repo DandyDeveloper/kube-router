@@ -13,6 +13,10 @@ Please see the [steps](https://github.com/cloudnativelabs/kube-router/tree/maste
 ### kubeadm
 Please see the [steps](https://github.com/cloudnativelabs/kube-router/blob/master/docs/kubeadm.md) to deploy Kubernetes cluster with Kube-router using [Kubeadm](https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/)
 
+### k0sproject
+k0s by default uses kube-router as a CNI option.
+Please see the [steps](https://docs.k0sproject.io/latest/install/) to deploy Kubernetes cluster with Kube-router using [k0s](https://docs.k0sproject.io/)
+
 ### generic
 Please see the [steps](https://github.com/cloudnativelabs/kube-router/blob/master/docs/generic.md) to deploy kube-router on manually installed clusters
 
@@ -40,19 +44,22 @@ Usage of kube-router:
       --advertise-external-ip                         Add External IP of service to the RIB so that it gets advertised to the BGP peers.
       --advertise-loadbalancer-ip                     Add LoadbBalancer IP of service status as set by the LB provider to the RIB so that it gets advertised to the BGP peers.
       --advertise-pod-cidr                            Add Node's POD cidr to the RIB so that it gets advertised to the BGP peers. (default true)
+      --auto-mtu                                      Auto detect and set the largest possible MTU for pod interfaces. (default true)
       --bgp-graceful-restart                          Enables the BGP Graceful Restart capability so that routes are preserved on unexpected restarts
       --bgp-graceful-restart-deferral-time duration   BGP Graceful restart deferral time according to RFC4724 4.1, maximum 18h. (default 6m0s)
-      --bgp-port uint16                               The port open for incoming BGP connections and to use for connecting with other BGP peers. (default 179)
+      --bgp-graceful-restart-time duration            BGP Graceful restart time according to RFC4724 3, maximum 4095s. (default 1m30s)
+      --bgp-holdtime duration                         This parameter is mainly used to modify the holdtime declared to BGP peer. When Kube-router goes down abnormally, the local saving time of BGP route will be affected.Holdtime must be in the range 3s to 18h12m16s. (default 1m30s)
+      --bgp-port uint32                               The port open for incoming BGP connections and to use for connecting with other BGP peers. (default 179)
       --cache-sync-timeout duration                   The timeout for cache synchronization (e.g. '5s', '1m'). Must be greater than 0. (default 1m0s)
       --cleanup-config                                Cleanup iptables rules, ipvs, ipset configuration and exit.
       --cluster-asn uint                              ASN number under which cluster nodes will run iBGP.
-      --cluster-cidr string                           CIDR range of pods in the cluster. It is used to identify traffic originating from and destinated to pods.
       --disable-source-dest-check                     Disable the source-dest-check attribute for AWS EC2 instances. When this option is false, it must be set some other way. (default true)
       --enable-cni                                    Enable CNI plugin. Disable if you want to use kube-router features alongside another CNI plugin. (default true)
       --enable-ibgp                                   Enables peering with nodes with the same ASN, if disabled will only peer with external BGP peers (default true)
       --enable-overlay                                When enable-overlay is set to true, IP-in-IP tunneling is used for pod-to-pod networking across nodes in different subnets. When set to false no tunneling is used and routing infrastructure is expected to route traffic for pod-to-pod networking across nodes in different subnets (default true)
       --enable-pod-egress                             SNAT traffic from Pods to destinations outside the cluster. (default true)
       --enable-pprof                                  Enables pprof for debugging performance and memory leak issues.
+      --excluded-cidrs strings                        Excluded CIDRs are used to exclude IPVS rules from deletion.
       --hairpin-mode                                  Add iptables rules for every Service Endpoint to support hairpin traffic.
       --health-port uint16                            Health check port, 0 = Disabled (default 20244)
   -h, --help                                          Print usage information.
@@ -60,8 +67,8 @@ Usage of kube-router:
       --iptables-sync-period duration                 The delay between iptables rule synchronizations (e.g. '5s', '1m'). Must be greater than 0. (default 5m0s)
       --ipvs-graceful-period duration                 The graceful period before removing destinations from IPVS services (e.g. '5s', '1m', '2h22m'). Must be greater than 0. (default 30s)
       --ipvs-graceful-termination                     Enables the experimental IPVS graceful terminaton capability
+      --ipvs-permit-all                               Enables rule to accept all incoming traffic to service VIP's on the node. (default true)
       --ipvs-sync-period duration                     The delay between ipvs config synchronizations (e.g. '5s', '1m', '2h22m'). Must be greater than 0. (default 5m0s)
-      --ipvs-permit-all                               Permit all inbound traffic to the service VIP's
       --kubeconfig string                             Path to kubeconfig file with authorization information (the master location is set by the master flag).
       --masquerade-all                                SNAT all traffic to cluster IP/node port.
       --master string                                 The address of the Kubernetes API server (overrides any value in kubeconfig).
@@ -75,12 +82,17 @@ Usage of kube-router:
       --peer-router-ips ipSlice                       The ip address of the external router to which all nodes will peer and advertise the cluster ip and pod cidr's. (default [])
       --peer-router-multihop-ttl uint8                Enable eBGP multihop supports -- sets multihop-ttl. (Relevant only if ttl >= 2)
       --peer-router-passwords strings                 Password for authenticating against the BGP peer defined with "--peer-router-ips".
+      --peer-router-passwords-file string             Path to file containing password for authenticating against the BGP peer defined with "--peer-router-ips". --peer-router-passwords will be preferred if both are set.
       --peer-router-ports uints                       The remote port of the external BGP to which all nodes will peer. If not set, default BGP port (179) will be used. (default [])
       --router-id string                              BGP router-id. Must be specified in a ipv6 only cluster.
       --routes-sync-period duration                   The delay between route updates and advertisements (e.g. '5s', '1m', '2h22m'). Must be greater than 0. (default 5m0s)
       --run-firewall                                  Enables Network Policy -- sets up iptables to provide ingress firewall for pods. (default true)
       --run-router                                    Enables Pod Networking -- Advertises and learns the routes to Pods via iBGP. (default true)
       --run-service-proxy                             Enables Service Proxy -- sets up IPVS for Kubernetes Services. (default true)
+      --runtime-endpoint string                       Path to CRI compatible container runtime socket (used for DSR mode). Currently known working with containerd.
+      --service-cluster-ip-range string               CIDR value from which service cluster IPs are assigned. Default: 10.96.0.0/12 (default "10.96.0.0/12")
+      --service-external-ip-range strings             Specify external IP CIDRs that are used for inter-cluster communication (can be specified multiple times)
+      --service-node-port-range string                NodePort range specified with either a hyphen or colon (default "30000-32767")
   -v, --v string                                      log level for V logs (default "0")
   -V, --version                                       Print version information.
 ```
@@ -208,6 +220,11 @@ To enable hairpin traffic for Service `my-service`:
 kubectl annotate service my-service "kube-router.io/service.hairpin="
 ```
 
+If you want to also hairpin externalIPs declared for Service `my-service` (note, you must also either enable global hairpin or service hairpin (see above ^^^)  for this to have an effect):
+```
+kubectl annotate service my-service "kube-router.io/service.hairpin.externalips="
+```
+
 ## Direct server return
 
 Please read below blog on how to user DSR in combination with `--advertise-external-ip` to build highly scalable and available ingress.
@@ -234,6 +251,13 @@ Above changes are required for kube-router to enter pod namespeace and create ip
 assign the external IP to the VIP. 
 
 For an e.g manifest please look at [manifest](../daemonset/kubeadm-kuberouter-all-features-dsr.yaml) with DSR requirements enabled.
+
+## SNATing Service Traffic
+By default, as traffic ingresses into the cluster, kube-router will source nat the traffic to ensure symmetric routing if it needs to proxy that traffic to ensure it gets to a node that has a service pod that is capable of servicing the traffic. This has a potential to cause issues when network policies are applied to that service since now the traffic will appear to be coming from a node in your cluster instead of the traffic originator.
+
+This is an issue that is common to all proxy's and all Kubernetes service proxies in general. You can read more information about this issue here: https://kubernetes.io/docs/tutorials/services/source-ip/#source-ip-for-services-with-type-nodeport
+
+In addition to the fix mentioned in the linked upstream documentation (using `service.spec.externalTrafficPolicy`), kube-router also provides DSR, which by its nature preserves the source IP, to solve this problem. For more information see the section above.
 
 ## Load balancing Scheduling Algorithms
 
@@ -295,6 +319,32 @@ As of 0.2.6 we support experimental graceful termination of IPVS destinations. W
 the fallback period is 30 seconds and can be adjusted with `--ipvs-graceful-period` cli-opt
 
 graceful termination works in such a way that when kube-router receives a delete endpoint notification for a service it's weight is adjusted to 0 before getting deleted after he termination grace period has passed or the Active & Inactive connections goes down to 0.
+
+## MTU
+
+The maximum transmission unit (MTU) determines the largest packet size that can be transmitted through your network. MTU for the pod interfaces should be set appropriately to prevent fragmentation and packet drops thereby achieving maximum performance. If `auto-mtu` is set to true (`auto-mtu` is set to true by default as of kube-router 1.1), kube-router will determine right MTU for both `kube-bridge` and pod interfaces. If you set `auto-mtu` to false kube-router will not attempt to configure MTU. However you can choose the right MTU and set in the `cni-conf.json` section of the `10-kuberouter.conflist` in the kube-router [daemonsets](../daemonset/). For e.g.
+
+```
+  cni-conf.json: |
+    {
+       "cniVersion":"0.3.0",
+       "name":"mynet",
+       "plugins":[
+          {
+             "name":"kubernetes",
+             "type":"bridge",
+             "mtu": 1400,
+             "bridge":"kube-bridge",
+             "isDefaultGateway":true,
+             "ipam":{
+                "type":"host-local"
+             }
+          }
+       ]
+    }
+```
+
+ If you set MTU yourself via the CNI config, you'll also need to set MTU of `kube-bridge` manually to the right value to avoid packet fragmentation in case of existing nodes on which `kube-bridge` is already created. On node reboot or in case of new nodes joining the cluster both the pod's interface and `kube-bridge` will be setup with specified MTU value.
 
 ## BGP configuration
 

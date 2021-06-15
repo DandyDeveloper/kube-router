@@ -4,31 +4,10 @@
 package proxy
 
 import (
-	"github.com/docker/libnetwork/ipvs"
+	"github.com/moby/ipvs"
 	"github.com/vishvananda/netlink"
 	"net"
 	"sync"
-)
-
-var (
-	lockLinuxNetworkingMockcleanupMangleTableRule         sync.RWMutex
-	lockLinuxNetworkingMockgetKubeDummyInterface          sync.RWMutex
-	lockLinuxNetworkingMockipAddrAdd                      sync.RWMutex
-	lockLinuxNetworkingMockipAddrDel                      sync.RWMutex
-	lockLinuxNetworkingMockipvsAddFWMarkService           sync.RWMutex
-	lockLinuxNetworkingMockipvsAddServer                  sync.RWMutex
-	lockLinuxNetworkingMockipvsAddService                 sync.RWMutex
-	lockLinuxNetworkingMockipvsDelDestination             sync.RWMutex
-	lockLinuxNetworkingMockipvsDelService                 sync.RWMutex
-	lockLinuxNetworkingMockipvsGetDestinations            sync.RWMutex
-	lockLinuxNetworkingMockipvsGetServices                sync.RWMutex
-	lockLinuxNetworkingMockipvsNewDestination             sync.RWMutex
-	lockLinuxNetworkingMockipvsNewService                 sync.RWMutex
-	lockLinuxNetworkingMockipvsUpdateDestination          sync.RWMutex
-	lockLinuxNetworkingMockipvsUpdateService              sync.RWMutex
-	lockLinuxNetworkingMockprepareEndpointForDsr          sync.RWMutex
-	lockLinuxNetworkingMocksetupPolicyRoutingForDSR       sync.RWMutex
-	lockLinuxNetworkingMocksetupRoutesForExternalIPForDSR sync.RWMutex
 )
 
 // Ensure, that LinuxNetworkingMock does implement LinuxNetworking.
@@ -37,73 +16,73 @@ var _ LinuxNetworking = &LinuxNetworkingMock{}
 
 // LinuxNetworkingMock is a mock implementation of LinuxNetworking.
 //
-//     func TestSomethingThatUsesLinuxNetworking(t *testing.T) {
+// 	func TestSomethingThatUsesLinuxNetworking(t *testing.T) {
 //
-//         // make and configure a mocked LinuxNetworking
-//         mockedLinuxNetworking := &LinuxNetworkingMock{
-//             cleanupMangleTableRuleFunc: func(ip string, protocol string, port string, fwmark string) error {
-// 	               panic("mock out the cleanupMangleTableRule method")
-//             },
-//             getKubeDummyInterfaceFunc: func() (netlink.Link, error) {
-// 	               panic("mock out the getKubeDummyInterface method")
-//             },
-//             ipAddrAddFunc: func(iface netlink.Link, ip string, addRoute bool) error {
-// 	               panic("mock out the ipAddrAdd method")
-//             },
-//             ipAddrDelFunc: func(iface netlink.Link, ip string) error {
-// 	               panic("mock out the ipAddrDel method")
-//             },
-//             ipvsAddFWMarkServiceFunc: func(vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error) {
-// 	               panic("mock out the ipvsAddFWMarkService method")
-//             },
-//             ipvsAddServerFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
-// 	               panic("mock out the ipvsAddServer method")
-//             },
-//             ipvsAddServiceFunc: func(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error) {
-// 	               panic("mock out the ipvsAddService method")
-//             },
-//             ipvsDelDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
-// 	               panic("mock out the ipvsDelDestination method")
-//             },
-//             ipvsDelServiceFunc: func(ipvsSvc *ipvs.Service) error {
-// 	               panic("mock out the ipvsDelService method")
-//             },
-//             ipvsGetDestinationsFunc: func(ipvsSvc *ipvs.Service) ([]*ipvs.Destination, error) {
-// 	               panic("mock out the ipvsGetDestinations method")
-//             },
-//             ipvsGetServicesFunc: func() ([]*ipvs.Service, error) {
-// 	               panic("mock out the ipvsGetServices method")
-//             },
-//             ipvsNewDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
-// 	               panic("mock out the ipvsNewDestination method")
-//             },
-//             ipvsNewServiceFunc: func(ipvsSvc *ipvs.Service) error {
-// 	               panic("mock out the ipvsNewService method")
-//             },
-//             ipvsUpdateDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
-// 	               panic("mock out the ipvsUpdateDestination method")
-//             },
-//             ipvsUpdateServiceFunc: func(ipvsSvc *ipvs.Service) error {
-// 	               panic("mock out the ipvsUpdateService method")
-//             },
-//             prepareEndpointForDsrFunc: func(containerId string, endpointIP string, vip string) error {
-// 	               panic("mock out the prepareEndpointForDsr method")
-//             },
-//             setupPolicyRoutingForDSRFunc: func() error {
-// 	               panic("mock out the setupPolicyRoutingForDSR method")
-//             },
-//             setupRoutesForExternalIPForDSRFunc: func(in1 serviceInfoMap) error {
-// 	               panic("mock out the setupRoutesForExternalIPForDSR method")
-//             },
-//         }
+// 		// make and configure a mocked LinuxNetworking
+// 		mockedLinuxNetworking := &LinuxNetworkingMock{
+// 			cleanupMangleTableRuleFunc: func(ip string, protocol string, port string, fwmark string) error {
+// 				panic("mock out the cleanupMangleTableRule method")
+// 			},
+// 			getKubeDummyInterfaceFunc: func() (netlink.Link, error) {
+// 				panic("mock out the getKubeDummyInterface method")
+// 			},
+// 			ipAddrAddFunc: func(iface netlink.Link, ip string, addRoute bool) error {
+// 				panic("mock out the ipAddrAdd method")
+// 			},
+// 			ipAddrDelFunc: func(iface netlink.Link, ip string) error {
+// 				panic("mock out the ipAddrDel method")
+// 			},
+// 			ipvsAddFWMarkServiceFunc: func(vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error) {
+// 				panic("mock out the ipvsAddFWMarkService method")
+// 			},
+// 			ipvsAddServerFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
+// 				panic("mock out the ipvsAddServer method")
+// 			},
+// 			ipvsAddServiceFunc: func(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error) {
+// 				panic("mock out the ipvsAddService method")
+// 			},
+// 			ipvsDelDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
+// 				panic("mock out the ipvsDelDestination method")
+// 			},
+// 			ipvsDelServiceFunc: func(ipvsSvc *ipvs.Service) error {
+// 				panic("mock out the ipvsDelService method")
+// 			},
+// 			ipvsGetDestinationsFunc: func(ipvsSvc *ipvs.Service) ([]*ipvs.Destination, error) {
+// 				panic("mock out the ipvsGetDestinations method")
+// 			},
+// 			ipvsGetServicesFunc: func() ([]*ipvs.Service, error) {
+// 				panic("mock out the ipvsGetServices method")
+// 			},
+// 			ipvsNewDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
+// 				panic("mock out the ipvsNewDestination method")
+// 			},
+// 			ipvsNewServiceFunc: func(ipvsSvc *ipvs.Service) error {
+// 				panic("mock out the ipvsNewService method")
+// 			},
+// 			ipvsUpdateDestinationFunc: func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error {
+// 				panic("mock out the ipvsUpdateDestination method")
+// 			},
+// 			ipvsUpdateServiceFunc: func(ipvsSvc *ipvs.Service) error {
+// 				panic("mock out the ipvsUpdateService method")
+// 			},
+// 			prepareEndpointForDsrFunc: func(containerID string, endpointIP string, vip string) error {
+// 				panic("mock out the prepareEndpointForDsr method")
+// 			},
+// 			setupPolicyRoutingForDSRFunc: func() error {
+// 				panic("mock out the setupPolicyRoutingForDSR method")
+// 			},
+// 			setupRoutesForExternalIPForDSRFunc: func(serviceInfoMapMoqParam serviceInfoMap) error {
+// 				panic("mock out the setupRoutesForExternalIPForDSR method")
+// 			},
+// 		}
 //
-//         // use mockedLinuxNetworking in code that requires LinuxNetworking
-//         // and then make assertions.
+// 		// use mockedLinuxNetworking in code that requires LinuxNetworking
+// 		// and then make assertions.
 //
-//     }
+// 	}
 type LinuxNetworkingMock struct {
 	// cleanupMangleTableRuleFunc mocks the cleanupMangleTableRule method.
-	cleanupMangleTableRuleFunc func(ip string, protocol string, port string, fwmark string) error
+	cleanupMangleTableRuleFunc func(ip string, protocol string, port string, fwmark string, tcpMSS int) error
 
 	// getKubeDummyInterfaceFunc mocks the getKubeDummyInterface method.
 	getKubeDummyInterfaceFunc func() (netlink.Link, error)
@@ -115,13 +94,13 @@ type LinuxNetworkingMock struct {
 	ipAddrDelFunc func(iface netlink.Link, ip string) error
 
 	// ipvsAddFWMarkServiceFunc mocks the ipvsAddFWMarkService method.
-	ipvsAddFWMarkServiceFunc func(vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error)
+	ipvsAddFWMarkServiceFunc func(vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error)
 
 	// ipvsAddServerFunc mocks the ipvsAddServer method.
 	ipvsAddServerFunc func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error
 
 	// ipvsAddServiceFunc mocks the ipvsAddService method.
-	ipvsAddServiceFunc func(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error)
+	ipvsAddServiceFunc func(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error)
 
 	// ipvsDelDestinationFunc mocks the ipvsDelDestination method.
 	ipvsDelDestinationFunc func(ipvsSvc *ipvs.Service, ipvsDst *ipvs.Destination) error
@@ -148,13 +127,13 @@ type LinuxNetworkingMock struct {
 	ipvsUpdateServiceFunc func(ipvsSvc *ipvs.Service) error
 
 	// prepareEndpointForDsrFunc mocks the prepareEndpointForDsr method.
-	prepareEndpointForDsrFunc func(containerId string, endpointIP string, vip string) error
+	prepareEndpointForDsrFunc func(containerID string, endpointIP string, vip string) error
 
 	// setupPolicyRoutingForDSRFunc mocks the setupPolicyRoutingForDSR method.
 	setupPolicyRoutingForDSRFunc func() error
 
 	// setupRoutesForExternalIPForDSRFunc mocks the setupRoutesForExternalIPForDSR method.
-	setupRoutesForExternalIPForDSRFunc func(in1 serviceInfoMap) error
+	setupRoutesForExternalIPForDSRFunc func(serviceInfoMapMoqParam serviceInfoMap) error
 
 	// calls tracks calls to the methods.
 	calls struct {
@@ -198,6 +177,8 @@ type LinuxNetworkingMock struct {
 			Port uint16
 			// Persistent is the persistent argument value.
 			Persistent bool
+			// PersistentTimeout is the persistentTimeout argument value.
+			PersistentTimeout int32
 			// Scheduler is the scheduler argument value.
 			Scheduler string
 			// Flags is the flags argument value.
@@ -222,6 +203,8 @@ type LinuxNetworkingMock struct {
 			Port uint16
 			// Persistent is the persistent argument value.
 			Persistent bool
+			// PersistentTimeout is the persistentTimeout argument value.
+			PersistentTimeout int32
 			// Scheduler is the scheduler argument value.
 			Scheduler string
 			// Flags is the flags argument value.
@@ -273,8 +256,8 @@ type LinuxNetworkingMock struct {
 		}
 		// prepareEndpointForDsr holds details about calls to the prepareEndpointForDsr method.
 		prepareEndpointForDsr []struct {
-			// ContainerId is the containerId argument value.
-			ContainerId string
+			// ContainerID is the containerID argument value.
+			ContainerID string
 			// EndpointIP is the endpointIP argument value.
 			EndpointIP string
 			// Vip is the vip argument value.
@@ -285,14 +268,32 @@ type LinuxNetworkingMock struct {
 		}
 		// setupRoutesForExternalIPForDSR holds details about calls to the setupRoutesForExternalIPForDSR method.
 		setupRoutesForExternalIPForDSR []struct {
-			// In1 is the in1 argument value.
-			In1 serviceInfoMap
+			// ServiceInfoMapMoqParam is the serviceInfoMapMoqParam argument value.
+			ServiceInfoMapMoqParam serviceInfoMap
 		}
 	}
+	lockcleanupMangleTableRule         sync.RWMutex
+	lockgetKubeDummyInterface          sync.RWMutex
+	lockipAddrAdd                      sync.RWMutex
+	lockipAddrDel                      sync.RWMutex
+	lockipvsAddFWMarkService           sync.RWMutex
+	lockipvsAddServer                  sync.RWMutex
+	lockipvsAddService                 sync.RWMutex
+	lockipvsDelDestination             sync.RWMutex
+	lockipvsDelService                 sync.RWMutex
+	lockipvsGetDestinations            sync.RWMutex
+	lockipvsGetServices                sync.RWMutex
+	lockipvsNewDestination             sync.RWMutex
+	lockipvsNewService                 sync.RWMutex
+	lockipvsUpdateDestination          sync.RWMutex
+	lockipvsUpdateService              sync.RWMutex
+	lockprepareEndpointForDsr          sync.RWMutex
+	locksetupPolicyRoutingForDSR       sync.RWMutex
+	locksetupRoutesForExternalIPForDSR sync.RWMutex
 }
 
 // cleanupMangleTableRule calls cleanupMangleTableRuleFunc.
-func (mock *LinuxNetworkingMock) cleanupMangleTableRule(ip string, protocol string, port string, fwmark string) error {
+func (mock *LinuxNetworkingMock) cleanupMangleTableRule(ip string, protocol string, port string, fwmark string, tcpMSS int) error {
 	if mock.cleanupMangleTableRuleFunc == nil {
 		panic("LinuxNetworkingMock.cleanupMangleTableRuleFunc: method is nil but LinuxNetworking.cleanupMangleTableRule was just called")
 	}
@@ -307,10 +308,10 @@ func (mock *LinuxNetworkingMock) cleanupMangleTableRule(ip string, protocol stri
 		Port:     port,
 		Fwmark:   fwmark,
 	}
-	lockLinuxNetworkingMockcleanupMangleTableRule.Lock()
+	mock.lockcleanupMangleTableRule.Lock()
 	mock.calls.cleanupMangleTableRule = append(mock.calls.cleanupMangleTableRule, callInfo)
-	lockLinuxNetworkingMockcleanupMangleTableRule.Unlock()
-	return mock.cleanupMangleTableRuleFunc(ip, protocol, port, fwmark)
+	mock.lockcleanupMangleTableRule.Unlock()
+	return mock.cleanupMangleTableRuleFunc(ip, protocol, port, fwmark, tcpMSS)
 }
 
 // cleanupMangleTableRuleCalls gets all the calls that were made to cleanupMangleTableRule.
@@ -328,9 +329,9 @@ func (mock *LinuxNetworkingMock) cleanupMangleTableRuleCalls() []struct {
 		Port     string
 		Fwmark   string
 	}
-	lockLinuxNetworkingMockcleanupMangleTableRule.RLock()
+	mock.lockcleanupMangleTableRule.RLock()
 	calls = mock.calls.cleanupMangleTableRule
-	lockLinuxNetworkingMockcleanupMangleTableRule.RUnlock()
+	mock.lockcleanupMangleTableRule.RUnlock()
 	return calls
 }
 
@@ -341,9 +342,9 @@ func (mock *LinuxNetworkingMock) getKubeDummyInterface() (netlink.Link, error) {
 	}
 	callInfo := struct {
 	}{}
-	lockLinuxNetworkingMockgetKubeDummyInterface.Lock()
+	mock.lockgetKubeDummyInterface.Lock()
 	mock.calls.getKubeDummyInterface = append(mock.calls.getKubeDummyInterface, callInfo)
-	lockLinuxNetworkingMockgetKubeDummyInterface.Unlock()
+	mock.lockgetKubeDummyInterface.Unlock()
 	return mock.getKubeDummyInterfaceFunc()
 }
 
@@ -354,9 +355,9 @@ func (mock *LinuxNetworkingMock) getKubeDummyInterfaceCalls() []struct {
 } {
 	var calls []struct {
 	}
-	lockLinuxNetworkingMockgetKubeDummyInterface.RLock()
+	mock.lockgetKubeDummyInterface.RLock()
 	calls = mock.calls.getKubeDummyInterface
-	lockLinuxNetworkingMockgetKubeDummyInterface.RUnlock()
+	mock.lockgetKubeDummyInterface.RUnlock()
 	return calls
 }
 
@@ -374,9 +375,9 @@ func (mock *LinuxNetworkingMock) ipAddrAdd(iface netlink.Link, ip string, addRou
 		IP:       ip,
 		AddRoute: addRoute,
 	}
-	lockLinuxNetworkingMockipAddrAdd.Lock()
+	mock.lockipAddrAdd.Lock()
 	mock.calls.ipAddrAdd = append(mock.calls.ipAddrAdd, callInfo)
-	lockLinuxNetworkingMockipAddrAdd.Unlock()
+	mock.lockipAddrAdd.Unlock()
 	return mock.ipAddrAddFunc(iface, ip, addRoute)
 }
 
@@ -393,9 +394,9 @@ func (mock *LinuxNetworkingMock) ipAddrAddCalls() []struct {
 		IP       string
 		AddRoute bool
 	}
-	lockLinuxNetworkingMockipAddrAdd.RLock()
+	mock.lockipAddrAdd.RLock()
 	calls = mock.calls.ipAddrAdd
-	lockLinuxNetworkingMockipAddrAdd.RUnlock()
+	mock.lockipAddrAdd.RUnlock()
 	return calls
 }
 
@@ -411,9 +412,9 @@ func (mock *LinuxNetworkingMock) ipAddrDel(iface netlink.Link, ip string) error 
 		Iface: iface,
 		IP:    ip,
 	}
-	lockLinuxNetworkingMockipAddrDel.Lock()
+	mock.lockipAddrDel.Lock()
 	mock.calls.ipAddrDel = append(mock.calls.ipAddrDel, callInfo)
-	lockLinuxNetworkingMockipAddrDel.Unlock()
+	mock.lockipAddrDel.Unlock()
 	return mock.ipAddrDelFunc(iface, ip)
 }
 
@@ -428,60 +429,64 @@ func (mock *LinuxNetworkingMock) ipAddrDelCalls() []struct {
 		Iface netlink.Link
 		IP    string
 	}
-	lockLinuxNetworkingMockipAddrDel.RLock()
+	mock.lockipAddrDel.RLock()
 	calls = mock.calls.ipAddrDel
-	lockLinuxNetworkingMockipAddrDel.RUnlock()
+	mock.lockipAddrDel.RUnlock()
 	return calls
 }
 
 // ipvsAddFWMarkService calls ipvsAddFWMarkServiceFunc.
-func (mock *LinuxNetworkingMock) ipvsAddFWMarkService(vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error) {
+func (mock *LinuxNetworkingMock) ipvsAddFWMarkService(vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error) {
 	if mock.ipvsAddFWMarkServiceFunc == nil {
 		panic("LinuxNetworkingMock.ipvsAddFWMarkServiceFunc: method is nil but LinuxNetworking.ipvsAddFWMarkService was just called")
 	}
 	callInfo := struct {
-		Vip        net.IP
-		Protocol   uint16
-		Port       uint16
-		Persistent bool
-		Scheduler  string
-		Flags      schedFlags
+		Vip               net.IP
+		Protocol          uint16
+		Port              uint16
+		Persistent        bool
+		PersistentTimeout int32
+		Scheduler         string
+		Flags             schedFlags
 	}{
-		Vip:        vip,
-		Protocol:   protocol,
-		Port:       port,
-		Persistent: persistent,
-		Scheduler:  scheduler,
-		Flags:      flags,
+		Vip:               vip,
+		Protocol:          protocol,
+		Port:              port,
+		Persistent:        persistent,
+		PersistentTimeout: persistentTimeout,
+		Scheduler:         scheduler,
+		Flags:             flags,
 	}
-	lockLinuxNetworkingMockipvsAddFWMarkService.Lock()
+	mock.lockipvsAddFWMarkService.Lock()
 	mock.calls.ipvsAddFWMarkService = append(mock.calls.ipvsAddFWMarkService, callInfo)
-	lockLinuxNetworkingMockipvsAddFWMarkService.Unlock()
-	return mock.ipvsAddFWMarkServiceFunc(vip, protocol, port, persistent, scheduler, flags)
+	mock.lockipvsAddFWMarkService.Unlock()
+	return mock.ipvsAddFWMarkServiceFunc(vip, protocol, port, persistent, persistentTimeout, scheduler, flags)
 }
 
 // ipvsAddFWMarkServiceCalls gets all the calls that were made to ipvsAddFWMarkService.
 // Check the length with:
 //     len(mockedLinuxNetworking.ipvsAddFWMarkServiceCalls())
 func (mock *LinuxNetworkingMock) ipvsAddFWMarkServiceCalls() []struct {
-	Vip        net.IP
-	Protocol   uint16
-	Port       uint16
-	Persistent bool
-	Scheduler  string
-	Flags      schedFlags
+	Vip               net.IP
+	Protocol          uint16
+	Port              uint16
+	Persistent        bool
+	PersistentTimeout int32
+	Scheduler         string
+	Flags             schedFlags
 } {
 	var calls []struct {
-		Vip        net.IP
-		Protocol   uint16
-		Port       uint16
-		Persistent bool
-		Scheduler  string
-		Flags      schedFlags
+		Vip               net.IP
+		Protocol          uint16
+		Port              uint16
+		Persistent        bool
+		PersistentTimeout int32
+		Scheduler         string
+		Flags             schedFlags
 	}
-	lockLinuxNetworkingMockipvsAddFWMarkService.RLock()
+	mock.lockipvsAddFWMarkService.RLock()
 	calls = mock.calls.ipvsAddFWMarkService
-	lockLinuxNetworkingMockipvsAddFWMarkService.RUnlock()
+	mock.lockipvsAddFWMarkService.RUnlock()
 	return calls
 }
 
@@ -497,9 +502,9 @@ func (mock *LinuxNetworkingMock) ipvsAddServer(ipvsSvc *ipvs.Service, ipvsDst *i
 		IpvsSvc: ipvsSvc,
 		IpvsDst: ipvsDst,
 	}
-	lockLinuxNetworkingMockipvsAddServer.Lock()
+	mock.lockipvsAddServer.Lock()
 	mock.calls.ipvsAddServer = append(mock.calls.ipvsAddServer, callInfo)
-	lockLinuxNetworkingMockipvsAddServer.Unlock()
+	mock.lockipvsAddServer.Unlock()
 	return mock.ipvsAddServerFunc(ipvsSvc, ipvsDst)
 }
 
@@ -514,64 +519,68 @@ func (mock *LinuxNetworkingMock) ipvsAddServerCalls() []struct {
 		IpvsSvc *ipvs.Service
 		IpvsDst *ipvs.Destination
 	}
-	lockLinuxNetworkingMockipvsAddServer.RLock()
+	mock.lockipvsAddServer.RLock()
 	calls = mock.calls.ipvsAddServer
-	lockLinuxNetworkingMockipvsAddServer.RUnlock()
+	mock.lockipvsAddServer.RUnlock()
 	return calls
 }
 
 // ipvsAddService calls ipvsAddServiceFunc.
-func (mock *LinuxNetworkingMock) ipvsAddService(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, scheduler string, flags schedFlags) (*ipvs.Service, error) {
+func (mock *LinuxNetworkingMock) ipvsAddService(svcs []*ipvs.Service, vip net.IP, protocol uint16, port uint16, persistent bool, persistentTimeout int32, scheduler string, flags schedFlags) (*ipvs.Service, error) {
 	if mock.ipvsAddServiceFunc == nil {
 		panic("LinuxNetworkingMock.ipvsAddServiceFunc: method is nil but LinuxNetworking.ipvsAddService was just called")
 	}
 	callInfo := struct {
-		Svcs       []*ipvs.Service
-		Vip        net.IP
-		Protocol   uint16
-		Port       uint16
-		Persistent bool
-		Scheduler  string
-		Flags      schedFlags
+		Svcs              []*ipvs.Service
+		Vip               net.IP
+		Protocol          uint16
+		Port              uint16
+		Persistent        bool
+		PersistentTimeout int32
+		Scheduler         string
+		Flags             schedFlags
 	}{
-		Svcs:       svcs,
-		Vip:        vip,
-		Protocol:   protocol,
-		Port:       port,
-		Persistent: persistent,
-		Scheduler:  scheduler,
-		Flags:      flags,
+		Svcs:              svcs,
+		Vip:               vip,
+		Protocol:          protocol,
+		Port:              port,
+		Persistent:        persistent,
+		PersistentTimeout: persistentTimeout,
+		Scheduler:         scheduler,
+		Flags:             flags,
 	}
-	lockLinuxNetworkingMockipvsAddService.Lock()
+	mock.lockipvsAddService.Lock()
 	mock.calls.ipvsAddService = append(mock.calls.ipvsAddService, callInfo)
-	lockLinuxNetworkingMockipvsAddService.Unlock()
-	return mock.ipvsAddServiceFunc(svcs, vip, protocol, port, persistent, scheduler, flags)
+	mock.lockipvsAddService.Unlock()
+	return mock.ipvsAddServiceFunc(svcs, vip, protocol, port, persistent, persistentTimeout, scheduler, flags)
 }
 
 // ipvsAddServiceCalls gets all the calls that were made to ipvsAddService.
 // Check the length with:
 //     len(mockedLinuxNetworking.ipvsAddServiceCalls())
 func (mock *LinuxNetworkingMock) ipvsAddServiceCalls() []struct {
-	Svcs       []*ipvs.Service
-	Vip        net.IP
-	Protocol   uint16
-	Port       uint16
-	Persistent bool
-	Scheduler  string
-	Flags      schedFlags
+	Svcs              []*ipvs.Service
+	Vip               net.IP
+	Protocol          uint16
+	Port              uint16
+	Persistent        bool
+	PersistentTimeout int32
+	Scheduler         string
+	Flags             schedFlags
 } {
 	var calls []struct {
-		Svcs       []*ipvs.Service
-		Vip        net.IP
-		Protocol   uint16
-		Port       uint16
-		Persistent bool
-		Scheduler  string
-		Flags      schedFlags
+		Svcs              []*ipvs.Service
+		Vip               net.IP
+		Protocol          uint16
+		Port              uint16
+		Persistent        bool
+		PersistentTimeout int32
+		Scheduler         string
+		Flags             schedFlags
 	}
-	lockLinuxNetworkingMockipvsAddService.RLock()
+	mock.lockipvsAddService.RLock()
 	calls = mock.calls.ipvsAddService
-	lockLinuxNetworkingMockipvsAddService.RUnlock()
+	mock.lockipvsAddService.RUnlock()
 	return calls
 }
 
@@ -587,9 +596,9 @@ func (mock *LinuxNetworkingMock) ipvsDelDestination(ipvsSvc *ipvs.Service, ipvsD
 		IpvsSvc: ipvsSvc,
 		IpvsDst: ipvsDst,
 	}
-	lockLinuxNetworkingMockipvsDelDestination.Lock()
+	mock.lockipvsDelDestination.Lock()
 	mock.calls.ipvsDelDestination = append(mock.calls.ipvsDelDestination, callInfo)
-	lockLinuxNetworkingMockipvsDelDestination.Unlock()
+	mock.lockipvsDelDestination.Unlock()
 	return mock.ipvsDelDestinationFunc(ipvsSvc, ipvsDst)
 }
 
@@ -604,9 +613,9 @@ func (mock *LinuxNetworkingMock) ipvsDelDestinationCalls() []struct {
 		IpvsSvc *ipvs.Service
 		IpvsDst *ipvs.Destination
 	}
-	lockLinuxNetworkingMockipvsDelDestination.RLock()
+	mock.lockipvsDelDestination.RLock()
 	calls = mock.calls.ipvsDelDestination
-	lockLinuxNetworkingMockipvsDelDestination.RUnlock()
+	mock.lockipvsDelDestination.RUnlock()
 	return calls
 }
 
@@ -620,9 +629,9 @@ func (mock *LinuxNetworkingMock) ipvsDelService(ipvsSvc *ipvs.Service) error {
 	}{
 		IpvsSvc: ipvsSvc,
 	}
-	lockLinuxNetworkingMockipvsDelService.Lock()
+	mock.lockipvsDelService.Lock()
 	mock.calls.ipvsDelService = append(mock.calls.ipvsDelService, callInfo)
-	lockLinuxNetworkingMockipvsDelService.Unlock()
+	mock.lockipvsDelService.Unlock()
 	return mock.ipvsDelServiceFunc(ipvsSvc)
 }
 
@@ -635,9 +644,9 @@ func (mock *LinuxNetworkingMock) ipvsDelServiceCalls() []struct {
 	var calls []struct {
 		IpvsSvc *ipvs.Service
 	}
-	lockLinuxNetworkingMockipvsDelService.RLock()
+	mock.lockipvsDelService.RLock()
 	calls = mock.calls.ipvsDelService
-	lockLinuxNetworkingMockipvsDelService.RUnlock()
+	mock.lockipvsDelService.RUnlock()
 	return calls
 }
 
@@ -651,9 +660,9 @@ func (mock *LinuxNetworkingMock) ipvsGetDestinations(ipvsSvc *ipvs.Service) ([]*
 	}{
 		IpvsSvc: ipvsSvc,
 	}
-	lockLinuxNetworkingMockipvsGetDestinations.Lock()
+	mock.lockipvsGetDestinations.Lock()
 	mock.calls.ipvsGetDestinations = append(mock.calls.ipvsGetDestinations, callInfo)
-	lockLinuxNetworkingMockipvsGetDestinations.Unlock()
+	mock.lockipvsGetDestinations.Unlock()
 	return mock.ipvsGetDestinationsFunc(ipvsSvc)
 }
 
@@ -666,9 +675,9 @@ func (mock *LinuxNetworkingMock) ipvsGetDestinationsCalls() []struct {
 	var calls []struct {
 		IpvsSvc *ipvs.Service
 	}
-	lockLinuxNetworkingMockipvsGetDestinations.RLock()
+	mock.lockipvsGetDestinations.RLock()
 	calls = mock.calls.ipvsGetDestinations
-	lockLinuxNetworkingMockipvsGetDestinations.RUnlock()
+	mock.lockipvsGetDestinations.RUnlock()
 	return calls
 }
 
@@ -679,9 +688,9 @@ func (mock *LinuxNetworkingMock) ipvsGetServices() ([]*ipvs.Service, error) {
 	}
 	callInfo := struct {
 	}{}
-	lockLinuxNetworkingMockipvsGetServices.Lock()
+	mock.lockipvsGetServices.Lock()
 	mock.calls.ipvsGetServices = append(mock.calls.ipvsGetServices, callInfo)
-	lockLinuxNetworkingMockipvsGetServices.Unlock()
+	mock.lockipvsGetServices.Unlock()
 	return mock.ipvsGetServicesFunc()
 }
 
@@ -692,9 +701,9 @@ func (mock *LinuxNetworkingMock) ipvsGetServicesCalls() []struct {
 } {
 	var calls []struct {
 	}
-	lockLinuxNetworkingMockipvsGetServices.RLock()
+	mock.lockipvsGetServices.RLock()
 	calls = mock.calls.ipvsGetServices
-	lockLinuxNetworkingMockipvsGetServices.RUnlock()
+	mock.lockipvsGetServices.RUnlock()
 	return calls
 }
 
@@ -710,9 +719,9 @@ func (mock *LinuxNetworkingMock) ipvsNewDestination(ipvsSvc *ipvs.Service, ipvsD
 		IpvsSvc: ipvsSvc,
 		IpvsDst: ipvsDst,
 	}
-	lockLinuxNetworkingMockipvsNewDestination.Lock()
+	mock.lockipvsNewDestination.Lock()
 	mock.calls.ipvsNewDestination = append(mock.calls.ipvsNewDestination, callInfo)
-	lockLinuxNetworkingMockipvsNewDestination.Unlock()
+	mock.lockipvsNewDestination.Unlock()
 	return mock.ipvsNewDestinationFunc(ipvsSvc, ipvsDst)
 }
 
@@ -727,9 +736,9 @@ func (mock *LinuxNetworkingMock) ipvsNewDestinationCalls() []struct {
 		IpvsSvc *ipvs.Service
 		IpvsDst *ipvs.Destination
 	}
-	lockLinuxNetworkingMockipvsNewDestination.RLock()
+	mock.lockipvsNewDestination.RLock()
 	calls = mock.calls.ipvsNewDestination
-	lockLinuxNetworkingMockipvsNewDestination.RUnlock()
+	mock.lockipvsNewDestination.RUnlock()
 	return calls
 }
 
@@ -743,9 +752,9 @@ func (mock *LinuxNetworkingMock) ipvsNewService(ipvsSvc *ipvs.Service) error {
 	}{
 		IpvsSvc: ipvsSvc,
 	}
-	lockLinuxNetworkingMockipvsNewService.Lock()
+	mock.lockipvsNewService.Lock()
 	mock.calls.ipvsNewService = append(mock.calls.ipvsNewService, callInfo)
-	lockLinuxNetworkingMockipvsNewService.Unlock()
+	mock.lockipvsNewService.Unlock()
 	return mock.ipvsNewServiceFunc(ipvsSvc)
 }
 
@@ -758,9 +767,9 @@ func (mock *LinuxNetworkingMock) ipvsNewServiceCalls() []struct {
 	var calls []struct {
 		IpvsSvc *ipvs.Service
 	}
-	lockLinuxNetworkingMockipvsNewService.RLock()
+	mock.lockipvsNewService.RLock()
 	calls = mock.calls.ipvsNewService
-	lockLinuxNetworkingMockipvsNewService.RUnlock()
+	mock.lockipvsNewService.RUnlock()
 	return calls
 }
 
@@ -776,9 +785,9 @@ func (mock *LinuxNetworkingMock) ipvsUpdateDestination(ipvsSvc *ipvs.Service, ip
 		IpvsSvc: ipvsSvc,
 		IpvsDst: ipvsDst,
 	}
-	lockLinuxNetworkingMockipvsUpdateDestination.Lock()
+	mock.lockipvsUpdateDestination.Lock()
 	mock.calls.ipvsUpdateDestination = append(mock.calls.ipvsUpdateDestination, callInfo)
-	lockLinuxNetworkingMockipvsUpdateDestination.Unlock()
+	mock.lockipvsUpdateDestination.Unlock()
 	return mock.ipvsUpdateDestinationFunc(ipvsSvc, ipvsDst)
 }
 
@@ -793,9 +802,9 @@ func (mock *LinuxNetworkingMock) ipvsUpdateDestinationCalls() []struct {
 		IpvsSvc *ipvs.Service
 		IpvsDst *ipvs.Destination
 	}
-	lockLinuxNetworkingMockipvsUpdateDestination.RLock()
+	mock.lockipvsUpdateDestination.RLock()
 	calls = mock.calls.ipvsUpdateDestination
-	lockLinuxNetworkingMockipvsUpdateDestination.RUnlock()
+	mock.lockipvsUpdateDestination.RUnlock()
 	return calls
 }
 
@@ -809,9 +818,9 @@ func (mock *LinuxNetworkingMock) ipvsUpdateService(ipvsSvc *ipvs.Service) error 
 	}{
 		IpvsSvc: ipvsSvc,
 	}
-	lockLinuxNetworkingMockipvsUpdateService.Lock()
+	mock.lockipvsUpdateService.Lock()
 	mock.calls.ipvsUpdateService = append(mock.calls.ipvsUpdateService, callInfo)
-	lockLinuxNetworkingMockipvsUpdateService.Unlock()
+	mock.lockipvsUpdateService.Unlock()
 	return mock.ipvsUpdateServiceFunc(ipvsSvc)
 }
 
@@ -824,48 +833,48 @@ func (mock *LinuxNetworkingMock) ipvsUpdateServiceCalls() []struct {
 	var calls []struct {
 		IpvsSvc *ipvs.Service
 	}
-	lockLinuxNetworkingMockipvsUpdateService.RLock()
+	mock.lockipvsUpdateService.RLock()
 	calls = mock.calls.ipvsUpdateService
-	lockLinuxNetworkingMockipvsUpdateService.RUnlock()
+	mock.lockipvsUpdateService.RUnlock()
 	return calls
 }
 
 // prepareEndpointForDsr calls prepareEndpointForDsrFunc.
-func (mock *LinuxNetworkingMock) prepareEndpointForDsr(containerId string, endpointIP string, vip string) error {
+func (mock *LinuxNetworkingMock) prepareEndpointForDsr(containerID string, endpointIP string, vip string) error {
 	if mock.prepareEndpointForDsrFunc == nil {
 		panic("LinuxNetworkingMock.prepareEndpointForDsrFunc: method is nil but LinuxNetworking.prepareEndpointForDsr was just called")
 	}
 	callInfo := struct {
-		ContainerId string
+		ContainerID string
 		EndpointIP  string
 		Vip         string
 	}{
-		ContainerId: containerId,
+		ContainerID: containerID,
 		EndpointIP:  endpointIP,
 		Vip:         vip,
 	}
-	lockLinuxNetworkingMockprepareEndpointForDsr.Lock()
+	mock.lockprepareEndpointForDsr.Lock()
 	mock.calls.prepareEndpointForDsr = append(mock.calls.prepareEndpointForDsr, callInfo)
-	lockLinuxNetworkingMockprepareEndpointForDsr.Unlock()
-	return mock.prepareEndpointForDsrFunc(containerId, endpointIP, vip)
+	mock.lockprepareEndpointForDsr.Unlock()
+	return mock.prepareEndpointForDsrFunc(containerID, endpointIP, vip)
 }
 
 // prepareEndpointForDsrCalls gets all the calls that were made to prepareEndpointForDsr.
 // Check the length with:
 //     len(mockedLinuxNetworking.prepareEndpointForDsrCalls())
 func (mock *LinuxNetworkingMock) prepareEndpointForDsrCalls() []struct {
-	ContainerId string
+	ContainerID string
 	EndpointIP  string
 	Vip         string
 } {
 	var calls []struct {
-		ContainerId string
+		ContainerID string
 		EndpointIP  string
 		Vip         string
 	}
-	lockLinuxNetworkingMockprepareEndpointForDsr.RLock()
+	mock.lockprepareEndpointForDsr.RLock()
 	calls = mock.calls.prepareEndpointForDsr
-	lockLinuxNetworkingMockprepareEndpointForDsr.RUnlock()
+	mock.lockprepareEndpointForDsr.RUnlock()
 	return calls
 }
 
@@ -876,9 +885,9 @@ func (mock *LinuxNetworkingMock) setupPolicyRoutingForDSR() error {
 	}
 	callInfo := struct {
 	}{}
-	lockLinuxNetworkingMocksetupPolicyRoutingForDSR.Lock()
+	mock.locksetupPolicyRoutingForDSR.Lock()
 	mock.calls.setupPolicyRoutingForDSR = append(mock.calls.setupPolicyRoutingForDSR, callInfo)
-	lockLinuxNetworkingMocksetupPolicyRoutingForDSR.Unlock()
+	mock.locksetupPolicyRoutingForDSR.Unlock()
 	return mock.setupPolicyRoutingForDSRFunc()
 }
 
@@ -889,39 +898,39 @@ func (mock *LinuxNetworkingMock) setupPolicyRoutingForDSRCalls() []struct {
 } {
 	var calls []struct {
 	}
-	lockLinuxNetworkingMocksetupPolicyRoutingForDSR.RLock()
+	mock.locksetupPolicyRoutingForDSR.RLock()
 	calls = mock.calls.setupPolicyRoutingForDSR
-	lockLinuxNetworkingMocksetupPolicyRoutingForDSR.RUnlock()
+	mock.locksetupPolicyRoutingForDSR.RUnlock()
 	return calls
 }
 
 // setupRoutesForExternalIPForDSR calls setupRoutesForExternalIPForDSRFunc.
-func (mock *LinuxNetworkingMock) setupRoutesForExternalIPForDSR(in1 serviceInfoMap) error {
+func (mock *LinuxNetworkingMock) setupRoutesForExternalIPForDSR(serviceInfoMapMoqParam serviceInfoMap) error {
 	if mock.setupRoutesForExternalIPForDSRFunc == nil {
 		panic("LinuxNetworkingMock.setupRoutesForExternalIPForDSRFunc: method is nil but LinuxNetworking.setupRoutesForExternalIPForDSR was just called")
 	}
 	callInfo := struct {
-		In1 serviceInfoMap
+		ServiceInfoMapMoqParam serviceInfoMap
 	}{
-		In1: in1,
+		ServiceInfoMapMoqParam: serviceInfoMapMoqParam,
 	}
-	lockLinuxNetworkingMocksetupRoutesForExternalIPForDSR.Lock()
+	mock.locksetupRoutesForExternalIPForDSR.Lock()
 	mock.calls.setupRoutesForExternalIPForDSR = append(mock.calls.setupRoutesForExternalIPForDSR, callInfo)
-	lockLinuxNetworkingMocksetupRoutesForExternalIPForDSR.Unlock()
-	return mock.setupRoutesForExternalIPForDSRFunc(in1)
+	mock.locksetupRoutesForExternalIPForDSR.Unlock()
+	return mock.setupRoutesForExternalIPForDSRFunc(serviceInfoMapMoqParam)
 }
 
 // setupRoutesForExternalIPForDSRCalls gets all the calls that were made to setupRoutesForExternalIPForDSR.
 // Check the length with:
 //     len(mockedLinuxNetworking.setupRoutesForExternalIPForDSRCalls())
 func (mock *LinuxNetworkingMock) setupRoutesForExternalIPForDSRCalls() []struct {
-	In1 serviceInfoMap
+	ServiceInfoMapMoqParam serviceInfoMap
 } {
 	var calls []struct {
-		In1 serviceInfoMap
+		ServiceInfoMapMoqParam serviceInfoMap
 	}
-	lockLinuxNetworkingMocksetupRoutesForExternalIPForDSR.RLock()
+	mock.locksetupRoutesForExternalIPForDSR.RLock()
 	calls = mock.calls.setupRoutesForExternalIPForDSR
-	lockLinuxNetworkingMocksetupRoutesForExternalIPForDSR.RUnlock()
+	mock.locksetupRoutesForExternalIPForDSR.RUnlock()
 	return calls
 }

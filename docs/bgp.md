@@ -14,7 +14,6 @@ the cluster).  There is no configuration required in this mode. All the nodes in
 the cluster are associated with private ASN 64512 implicitly (which can be
 configured with `--cluster-asn` flag). Users are transparent to use of iBGP.
 This mode is suitable in public cloud environments or small cluster deployments.
-In this mode all the nodes are expected to be L2 adjacent.
 
 ### Node-To-Node Peering Without Full Mesh
 
@@ -81,7 +80,7 @@ For example:
 
 ### Node Specific External BGP Peers
 
-Alternativley, each node can be configured with one or more node specific BGP
+Alternatively, each node can be configured with one or more node specific BGP
 peers. Information regarding node specific BGP peer is read from node API object
 annotations:
 - `kube-router.io/peer.ips`
@@ -112,8 +111,8 @@ kubectl annotate node <kube-node> "kube-router.io/path-prepend.repeat-n=5"
 
 The examples above have assumed there is no password authentication with BGP
 peer routers. If you need to use a password for peering, you can use the
-`--peer-router-passwords` CLI flag or the `kube-router.io/peer.passwords` node
-annotation.
+`--peer-router-passwords` command-line option, the `kube-router.io/peer.passwords` node
+annotation, or the `--peer-router-passwords-file` command-line option.
 
 #### Base64 Encoding Passwords
 
@@ -145,9 +144,38 @@ kubectl annotate node <kube-node> "kube-router.io/peer.asns=65000,65000"
 kubectl annotate node <kube-node> "kube-router.io/peer.passwords=U2VjdXJlUGFzc3dvcmQK,"
 ```
 
+Finally, to include peer passwords as a file you would run kube-router with the following option:
+```
+--peer-router-ips="192.168.1.99,192.168.1.100"
+--peer-router-asns="65000,65000"
+--peer-router-passwords-file="/etc/kube-router/bgp-passwords.conf"
+```
+
+The password file, closely follows the syntax of the command-line and node annotation options.
+Here, the first peer IP (192.168.1.99) would be configured with a password, while the second would not.
+```
+U2VjdXJlUGFzc3dvcmQK,
+```
+
+Note, complex parsing is not done on this file, please do not include any content other than the passwords on a single line in this file.
+
+### BGP Communities
+
+Global peers support the addition of BGP communities via node annotations. Node annotations can be formulated either as:
+* a single 32-bit integer
+* two 16-bit integers separated by a colon (`:`)
+* common BGP community names (e.g. `no-export`, `internet`, `no-peer`, etc.) (see: [WellKnownCommunityNameMap](https://github.com/osrg/gobgp/blob/cbdb752b10847163d9f942853b67cf173b6aa151/pkg/packet/bgp/bgp.go#L9444))
+
+In the following example we add the `NO_EXPORT` BGP community to two of our nodes via annotation using all three forms of the annotation:
+```
+kubectl annotate node <kube-node> "kube-router.io/node.bgp.communities=4294967041"
+kubectl annotate node <kube-node> "kube-router.io/node.bgp.communities=65535:65281"
+kubectl annotate node <kube-node> "kube-router.io/node.bgp.communities=no-export"
+```
+
 ## BGP listen address list 
 
-By default GoBGP server binds on the node IP address. However in case of nodes with multiple IP address it is desirable to bind GoBGP to multiple local adresses. Local IP address on which GoGBP should listen on an node can be configured with annotation `kube-router.io/bgp-local-addresses`.
+By default, GoBGP server binds on the node IP address. However in case of nodes with multiple IP address it is desirable to bind GoBGP to multiple local adresses. Local IP address on which GoGBP should listen on a node can be configured with annotation `kube-router.io/bgp-local-addresses`.
 
 Here is sample example to make GoBGP server to listen on multiple IP address
 ```
@@ -158,3 +186,17 @@ kubectl annotate node ip-172-20-46-87.us-west-2.compute.internal "kube-router.io
 
 By default kube-router populates GoBGP RIB with node IP as next hop for the advertised pod CIDR's and service VIP. While this works for most cases, overriding the next hop for the advertised rotues is necessary when node has multiple interfaces over which external peers are reached. Next hop need to be as per the interface local IP over which external peer can be reached. `--override-nexthop` let you override the next hop for the advertised route. Setting `--override-nexthop` to true leverages BGP next-hop-self functionality implemented in GoBGP. Next hop will automatically selected appropriately when advertising routes irrespective of the next hop in the RIB. 
 
+## Overriding the next hop and enable IPIP/tuennel
+
+A common scenario exists where each node in the cluster is connected to two upstream routers that are in two different subnets. For example, one router is connected to a public network subnet and the other router is connected to a private network subnet. Additionally, nodes may be split across different subnets (e.g. different racks) each of which has their own routers.
+
+In this scenario, `--override-nexthop` can be used to correctly peer with each upstream router, ensuring that the BGP next-hop attribute is correctly set to the node's IP address that faces the upstream router. The `--enable-overlay` option can be set to allow overlay/underlay tunneling across the different subnets to achieve an interconnected pod network.
+ This configuration would have the following effects:
+
+* Peering Outside the Cluster (https://github.com/cloudnativelabs/kube-router/blob/master/docs/bgp.md#peering-outside-the-cluster) via one of the many means that kube-router makes that option available
+* Overriding Next Hop
+* Enabling overlays in either full mode or with nodes in different subnets
+
+The warning here is that when using `--override-nexthop` in the above scenario, it may cause kube-router to advertise an IP address other than the node IP which is what kube-router connects the tunnel to when the `--enable-overlay` option is given. If this happens it may cause some network flows to become un-routable.
+
+Specifically, people need to take care when combining `--override-nexthop` and `--enable-overlay` and make sure that they understand their network, the flows they desire, how the kube-router logic works, and the possible side-effects that are created from their configuration. Please refer to this PR for the risk and impact discussion https://github.com/cloudnativelabs/kube-router/pull/1025.

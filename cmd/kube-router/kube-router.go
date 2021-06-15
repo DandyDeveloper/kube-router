@@ -10,7 +10,9 @@ import (
 
 	"github.com/cloudnativelabs/kube-router/pkg/cmd"
 	"github.com/cloudnativelabs/kube-router/pkg/options"
+	"github.com/cloudnativelabs/kube-router/pkg/version"
 	"github.com/spf13/pflag"
+	"k8s.io/klog/v2"
 )
 
 func main() {
@@ -22,16 +24,26 @@ func main() {
 }
 
 func Main() error {
+	klog.InitFlags(nil)
+
 	config := options.NewKubeRouterConfig()
 	config.AddFlags(pflag.CommandLine)
 	pflag.Parse()
 
 	// Workaround for this issue:
 	// https://github.com/kubernetes/kubernetes/issues/17162
-	flag.CommandLine.Parse([]string{})
-
-	flag.Set("logtostderr", "true")
-	flag.Set("v", config.VLevel)
+	err := flag.CommandLine.Parse([]string{})
+	if err != nil {
+		return fmt.Errorf("Failed to parse flags: %s", err)
+	}
+	err = flag.Set("logtostderr", "true")
+	if err != nil {
+		return fmt.Errorf("Failed to set flag: %s", err)
+	}
+	err = flag.Set("v", config.VLevel)
+	if err != nil {
+		return fmt.Errorf("Failed to set flag: %s", err)
+	}
 
 	if config.HelpRequested {
 		pflag.Usage()
@@ -39,7 +51,7 @@ func Main() error {
 	}
 
 	if config.Version {
-		cmd.PrintVersion(false)
+		version.PrintVersion(false)
 		return nil
 	}
 
@@ -59,7 +71,7 @@ func Main() error {
 
 	if config.EnablePprof {
 		go func() {
-			fmt.Fprintf(os.Stdout, http.ListenAndServe("0.0.0.0:6060", nil).Error())
+			fmt.Fprintf(os.Stdout, "%s\n", http.ListenAndServe("0.0.0.0:6060", nil).Error())
 		}()
 	}
 
